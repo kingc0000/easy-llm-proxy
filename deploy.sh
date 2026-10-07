@@ -31,7 +31,11 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
   fi
 fi
 
-echo "==> 2.5 初始化管理账号（默认 admin/admin123;已存在 auth.json 不覆盖,服务实例账号以其为准）"
+echo "==> 2.5 防御性备份 auth.json / config.json（异常重建时可回滚）"
+if [ -f "$CONFIG_DIR/auth.json" ]; then cp -p "$CONFIG_DIR/auth.json" "$CONFIG_DIR/auth.json.pre-deploy-$(date +%s)"; fi
+[ -f "$CONFIG_DIR/config.json" ] && cp -p "$CONFIG_DIR/config.json" "$CONFIG_DIR/config.json.pre-deploy-$(date +%s)" || true
+
+echo "==> 2.6 初始化管理账号（默认 admin/admin123;已存在 auth.json 不覆盖,服务实例账号以其为准）"
 if [ ! -f "$CONFIG_DIR/auth.json" ]; then
   AUTH_FILE="$CONFIG_DIR/auth.json" AUTH_USER="${AUTH_USER:-admin}" AUTH_PASS="${AUTH_PASS:-admin123}" node -e "require('$DIR/src/auth.js').init(process.env.AUTH_USER, process.env.AUTH_PASS) && console.log('    已创建管理账号:'+process.env.AUTH_USER)" || true
 fi

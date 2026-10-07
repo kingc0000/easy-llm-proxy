@@ -127,6 +127,8 @@ h3 small { color: var(--muted); font-weight: 400; }
 }
 .pkey-row .pkey-idx { font-size: .8rem; font-weight: 700; color: var(--accent); min-width: 46px; }
 .pkey-row input { padding: .4rem .6rem; font-size: .85rem; flex: 1; }
+.pkey-row .mono { flex: 1.6; }
+.pkey-row .pkey-note { flex: 1.4; min-width: 120px; }
 
 .msg { margin-left: .8rem; font-size: .86rem; font-weight: 500; }
 .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }

@@ -149,11 +149,15 @@ function modelRow(m, i) {
 
 function maskKey(k) { return (k && k.length > 12) ? k.slice(0, 8) + '…' + k.slice(-4) : k; }
 
+function pkeyValue(k) { return (typeof k === 'string') ? k : (k && k.value || ''); }
+function pkeyNote(k) { return (typeof k === 'object' && k) ? (k.note || '') : ''; }
+
 function renderKeys(keys) {
   const rows = (keys || []).map((k, i) => `
-    <div class="pkey-row" data-key="${esc(k)}">
+    <div class="pkey-row" data-key="${esc(pkeyValue(k))}">
       <span class="pkey-idx">key${i + 1}</span>
-      <span class="mono">${esc(maskKey(k))}</span>
+      <span class="mono">${esc(maskKey(pkeyValue(k)))}</span>
+      <input class="pkey-note" value="${esc(pkeyNote(k))}" placeholder="备注(可选)" autocomplete="off" title="给这个 key 加备注,随时可改">
       <button type="button" class="btn small danger" onclick="delKey(this)">−</button>
     </div>`).join('');
   $('#p-keys').innerHTML = rows + (rows ? '' : '<div class="empty" style="padding:.4rem 0">还没有 key,点击下方 + Key 添加</div>');
@@ -163,12 +167,13 @@ function addKeyRow() {
   div.innerHTML = `
     <div class="pkey-row new">
       <span class="pkey-idx">key${$$('#p-keys .pkey-row').length + 1}</span>
-      <input placeholder="输入真实 key" autocomplete="off">
+      <input class="pkey-input" placeholder="输入真实 key" autocomplete="off">
+      <input class="pkey-note" placeholder="备注(可选)" autocomplete="off">
       <button type="button" class="btn small danger" onclick="delKey(this)">−</button>
     </div>`.trim();
   const row = div.firstChild;          // appendChild 移动节点后 div.firstChild 会变 null,先存引用
   $('#p-keys').appendChild(row);
-  row.querySelector('input').focus();
+  row.querySelector('.pkey-input').focus();
 }
 function delKey(btn) { btn.closest('.pkey-row').remove(); }
 window.delKey = delKey;
@@ -196,9 +201,10 @@ function collectProvider() {
   }).filter(Boolean);
   if (!models.length) throw new Error('至少需要一个有效的 model(id 必填)');
   const keys = $$('#p-keys .pkey-row').map((r) => {
-    const inp = r.querySelector('input');
-    if (inp) return inp.value.trim();
-    return r.dataset.key || '';
+    const inp = r.querySelector('.pkey-input');
+    const val = inp ? inp.value.trim() : (r.dataset.key || '');
+    const note = r.querySelector('.pkey-note') ? r.querySelector('.pkey-note').value.trim() : '';
+    return val ? { value: val, note } : null;
   }).filter(Boolean);
   if (!keys.length) throw new Error('至少需要一个 provider 级 key');
   let extraHeaders = {};
@@ -372,7 +378,7 @@ async function loadStats() {
     renderEvents(d.recentEvents);
     $('#stats-table tbody').innerHTML = d.byKey.map((s) => `
       <tr>
-        <td>${esc(s.provider)}</td><td>${esc(s.model)}</td><td class="mono" title="${esc(s.key)}">${esc(maskKey(s.key))}</td>
+        <td>${esc(s.provider)}</td><td>${esc(s.model)}</td><td class="mono">${esc(s.key)}</td>
         <td>${s.requests}</td><td>${s.ok}</td><td>${s.errors}</td><td>${s.retries}</td>
         <td>${(s.promptTokens || 0).toLocaleString()}</td><td>${(s.cachedTokens || 0).toLocaleString()}</td><td>${(s.completionTokens || 0).toLocaleString()}</td>
         <td>${fmtBytes(s.outputBytes)}</td><td>${s.avgMs}ms</td>

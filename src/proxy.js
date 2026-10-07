@@ -383,9 +383,18 @@ async function handleApi(req, res, pathname, method) {
     return json(res, 200, { status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000) });
   }
   if (pathname === '/api/stats') {
+    const sum = stats.summary();
+    // 统计响应把 key 替换为 key1/key2/key3 序号(真实 key 不出接口)
+    const idxMap = new Map();
+    const shortOf = (k) => (k && k.length > 12 ? k.slice(0, 8) + '…' + k.slice(-4) : k);
+    for (const p of config.load().providers) {
+      (p.keys || []).forEach((k, i) => { idxMap.set(k, 'key' + (i + 1)); idxMap.set(shortOf(k), 'key' + (i + 1)); });
+      for (const m of p.models) (m.keys || []).forEach((k) => { const n = 'key' + (idxMap.size / 2 + 1); if (!idxMap.has(k)) { idxMap.set(k, n); idxMap.set(shortOf(k), n); } });
+    }
+    if (idxMap.size) sum.byKey = sum.byKey.map((s) => ({ ...s, key: idxMap.get(s.key) || 'key?' }));
     return json(res, 200, {
       status: 'ok', since: new Date(startTime).toISOString(), uptime: Math.floor((Date.now() - startTime) / 1000),
-      ...stats.summary(),
+      ...sum,
     });
   }
   if (pathname === '/api/stats/reset' && method === 'POST') {
@@ -405,7 +414,7 @@ async function handleApi(req, res, pathname, method) {
   if (isConf && method === 'GET') {
     const cfg = config.load();
     // 响应层剥离 model.keys:key 属 provider 级,models 共享(内部 balance 仍需,仅接口隐藏)
-    const out = { ...cfg, providers: cfg.providers.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m, keys: undefined })) })) };
+    const out = { ...cfg, providers: cfg.providers.map((p) => ({ ...p, keys: (p.keys || []).map((k) => ({ value: k, note: (p.keyNotes || {})[k] || '' })), models: p.models.map((m) => ({ ...m, keys: undefined })) })) };
     return json(res, 200, out);
   }
   if (isConf && (method === 'PUT' || method === 'POST')) {
