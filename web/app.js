@@ -39,6 +39,7 @@ function show(view) {
 $$('.tab').forEach((t) => t.addEventListener('click', () => {
   show(t.dataset.tab);
   if (t.dataset.tab === 'stats') loadStats();
+  if (t.dataset.tab === 'requests') { loadRequestDates(); loadRequests(); }
 }));
 
 /* ---------- 健康 ---------- */
@@ -327,6 +328,63 @@ async function loadStats() {
   }
 }
 $('#btn-refresh-stats').addEventListener('click', loadStats);
+
+/* ---------- 调用记录 ---------- */
+async function loadRequestDates() {
+  try {
+    const d = await api('/api/requests/dates');
+    const sel = $('#req-date');
+    sel.innerHTML = (d.dates || []).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join('') || '<option value="">无记录</option>';
+    if (d.dates.length && !sel.value) sel.value = d.dates[0];
+  } catch (e) { if (!maybeNeedToken(e)) $('#req-list').innerHTML = `<div class="empty err">加载失败: ${esc(e.message)}</div>`; }
+}
+function detailJson(o, truncated) {
+  if (o == null) return truncated ? '(请求体超限未记录)' : '无';
+  try { return JSON.stringify(o, null, 2) + (truncated ? '\n(超出上限未全记)' : ''); } catch { return String(o); }
+}
+async function loadRequests() {
+  const date = $('#req-date').value || '';
+  const model = $('#req-model').value.trim();
+  const status = $('#req-status').value.trim();
+  const q = $('#req-q').value.trim();
+  const query = new URLSearchParams({ date, model, status, q, limit: '50' }).toString();
+  try {
+    const d = await api('/api/requests?' + query);
+    const list = $('#req-list');
+    if (!d.total) { list.innerHTML = `<div class="empty">${date ? date + ' ' : ''}暂无调用记录${(model || status || q) ? '(符合筛选)' : ''}</div>`; return; }
+    list.innerHTML = d.rows.map((r, i) => {
+      const st = r.status;
+      const cls = (st >= 200 && st < 300) ? 'ok' : 'err';
+      const errInfo = r.error ? ` <span class="req-err">⚡ ${esc(r.error)}</span>` : '';
+      const downgraded = r.degraded ? ' <span title="降级命中">⇣降级</span>' : '';
+      return `<div class="req-row">
+        <div class="req-head" onclick="toggleReqDetail(${i}, event)">
+          <span class="req-time">${new Date(r.t).toLocaleString()}</span>
+          <b>${esc(r.provider)}</b>
+          <span>${r.model !== r.usedModel && r.model ? esc(r.model) + ' → ' : ''}${esc(r.usedModel || r.model || '-')}</span>
+          <span class="mono">${esc(r.key || '-')}</span>
+          <span class="req-status ${cls}">${st || '-'}</span>
+          <span>${r.ms}ms</span>
+          <span title="请求tok/缓存tok/输出tok">${r.promptTokens}/${r.cachedTokens}/${r.completionTokens}</span>
+          ${downgraded}
+          <span class="req-time">${r.attempts > 1 ? '尝试' + r.attempts + '次' : ''}</span>
+          ${errInfo}
+        </div>
+        <div class="req-detail hidden" id="reqd-${i}">
+          <div><h4>原始请求${r.reqTruncated ? '(截断)' : ''}</h4><pre>${esc(detailJson(r.req, r.reqTruncated))}</pre></div>
+          <div><h4>原始返回${r.truncated ? '(超出512KB截断)' : (r.apiType === 'anthropic' ? '(上游原始)' : '')}</h4><pre>${esc(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res))}</pre></div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { if (maybeNeedToken(e)) return; $('#req-list').innerHTML = `<div class="empty err">加载失败: ${esc(e.message)}</div>`; }
+}
+function toggleReqDetail(i, ev) { ev.stopPropagation(); const el = $('#reqd-' + i); if (el) el.classList.toggle('hidden'); }
+$('#btn-req-search').addEventListener('click', loadRequests);
+$('#btn-req-refresh').addEventListener('click', () => { loadRequestDates(); loadRequests(); });
+if ($('#req-date')) $('#req-date').addEventListener('change', loadRequests);
+$('#req-model').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRequests(); });
+$('#req-status').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRequests(); });
+$('#req-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRequests(); });
 
 /* ---------- 工具 ---------- */
 function esc(s) { return String(s ?? '').replace(/[&<>"'\\]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '\\': '&#92;' }[c])); }

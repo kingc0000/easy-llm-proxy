@@ -14,6 +14,7 @@ const balance = require('./balance');
 const stats = require('./stats');
 const ad = require('./adapters');
 const auth = require('./auth');
+const requests = require('./requests');
 
 const PORT = parseInt(process.env.PROXY_PORT || '8787', 10);
 const BIND_HOST = process.env.BIND_HOST || '127.0.0.1'; // 本地默认仅回环;Docker 设 0.0.0.0
@@ -90,6 +91,16 @@ async function handleChat(req, res, pathname, method, body, pick) {
   let degradeCount = 0;
   let lastResult = null;
 
+  // 调用日志记录(原始请求/原始返回/错误;流式响应按 chunks 累积,结束时落盘)
+  const rec = {
+    t: Date.now(), provider: provider.name, apiType: provider.apiType,
+    model: requestedModel, usedModel: null, key: null,
+    status: null, ms: 0, attempts: 0, degraded: false, error: null,
+    promptTokens: 0, cachedTokens: 0, completionTokens: 0,
+    req: parsed, res: null, resChunks: [], truncated: false, logged: false,
+  };
+  let resBytes = 0;
+
   while (attempts < cap) {
     const c = planList[planIdx];
     if (!c) break;
@@ -111,6 +122,8 @@ async function handleChat(req, res, pathname, method, body, pick) {
 
     if (d.kind === 'ok') {
       const ok = stats.bump(provider.name, c.modelId, c.key, 'ok');
+      rec.usedModel = c.modelId; rec.key = shortKey(c.key); rec.status = result.status;
+      rec.degraded = degradeCount > 0; rec.attempts = attempts;
       if (result.stream) {
         // 输出字节统计 + 真实 token(usage 滑动窗口: 覆盖 openai/anthropic 流式 SSE 与非流式 JSON)
         let win = Buffer.alloc(0);
@@ -128,19 +141,34 @@ async function handleChat(req, res, pathname, method, body, pick) {
             if (!got.cached && n.cached) { got.cached = 1; add.cached = n.cached; }
             if (!got.completion && n.completion) { got.completion = 1; add.completion = n.completion; }
           }
-          if (Object.keys(add).length) stats.markTokens(provider.name, c.modelId, c.key, add);
+          if (Object.keys(add).length) {
+            stats.markTokens(provider.name, c.modelId, c.key, add);
+            if (add.prompt) rec.promptTokens = add.prompt;         // 字段级首次值同步到日志
+            if (add.cached) rec.cachedTokens = add.cached;
+            if (add.completion) rec.completionTokens = add.completion;
+          }
+          // 原始返回累积(截断上限)
+          if (resBytes < requests.MAX_REC) { rec.resChunks.push(ch); resBytes += ch.length; }
+          else rec.truncated = true;
         });
+        result.stream.on('end', () => logRec(rec)); // 流式响应完整结束才落盘
       } else if (result.body) {
         ok.outputBytes += result.body.length;
         const u = ad.usageOf(result.body, provider.apiType);
-        if (u) stats.markTokens(provider.name, c.modelId, c.key, u);
+        if (u) {
+          stats.markTokens(provider.name, c.modelId, c.key, u);
+          if (u.prompt) rec.promptTokens = u.prompt;
+          if (u.cached) rec.cachedTokens = u.cached;
+          if (u.completion) rec.completionTokens = u.completion;
+        }
+        if (rec.res === null) { rec.res = result.body.toString('utf8'); logRec(rec); } // openai 非流式直接记录
       }
       balance.report(provider, st, c.modelId, true);
-      return outputOk(res, provider, result, parsed && parsed.stream, parsed && parsed.model);
+      return outputOk(res, provider, result, parsed && parsed.stream, parsed && parsed.model, rec);
     }
     if (d.kind === 'final') {
       stats.bump(provider.name, c.modelId, c.key, 'errors');
-      return outputFail(res, provider, result, 0);
+      return outputFail(res, provider, result, 0, rec);
     }
     stats.bump(provider.name, c.modelId, c.key, 'retries');
     console.log(`[proxy] ${method} ${pathname} -> ${result.status || 'ERR'} | ${provider.name}/${c.modelId} key ${shortKey(c.key)} (${d.reason}) 尝试 ${attempts}/${cap}`);
@@ -159,7 +187,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
   }
 
   // 耗尽
-  return outputFail(res, provider, lastResult, attempts);
+  return outputFail(res, provider, lastResult, attempts, rec);
 }
 
 /** decide 结果 → 错误分类标签 */
@@ -173,8 +201,28 @@ function errTypeOf(d) {
   return 'other';
 }
 
-function outputOk(res, provider, result, isStream, model) {
+/* ---------- 调用日志辅助(模块级,供 outputOk/outputFail 使用) ---------- */
+
+/** 收尾: 串化响应/截断/填充耗时;返回可写日志的记录 */
+function finalizeRec(rec) {
+  rec.ms = Date.now() - rec.t;
+  if (rec.resChunks && rec.resChunks.length) rec.res = Buffer.concat(rec.resChunks).toString('utf8');
+  if (rec.res && rec.res.length > requests.MAX_REC) { rec.truncated = true; rec.res = rec.res.slice(0, requests.MAX_REC); }
+  try { if (rec.req && JSON.stringify(rec.req).length > requests.MAX_REQ) { rec.reqTruncated = true; rec.req = null; } } catch { rec.req = null; }
+  delete rec.resChunks;
+  return rec;
+}
+
+/** 写日志(防重复) */
+function logRec(rec) {
+  if (rec && !rec.logged) { rec.logged = true; requests.log(finalizeRec(rec)); }
+}
+
+function outputOk(res, provider, result, isStream, model, rec) {
   if (result.error) return json(res, 502, { error: { message: `proxy: upstream error ${result.error.code || result.error.message}` } });
+  const noteClose = () => { // 客户端提前断开: 补记半截日志
+    if (rec && !rec.logged) { rec.error = 'client closed'; rec.status = 0; logRec(rec); }
+  };
   if (provider.apiType === 'anthropic') {
     const headers = ad.filterHeaders(result.headers);
     if (isStream) {
@@ -182,12 +230,13 @@ function outputOk(res, provider, result, isStream, model) {
       res.writeHead(result.status, headers);
       const conv = ad.anthropicSseToOpenAI(model || 'unknown');
       result.stream.on('error', (e) => { console.error('[proxy] upstream stream error:', e.message); res.destroy(); });
-      res.on('close', () => result.stream.destroy());
+      res.on('close', () => { result.stream.destroy(); noteClose(); });
       res.on('error', () => result.stream.destroy());
       return result.stream.pipe(conv).pipe(res);
     }
     return (async () => {
       const raw = await ad.consumeSmall(result.stream, 32 * 1024 * 1024); // 32MB 上限,避免大响应截断损坏
+      if (rec && rec.res === null) { rec.res = raw.toString('utf8'); logRec(rec); } // 上游原始返回
       try {
         const j = JSON.parse(raw.toString('utf8'));
         headers['content-type'] = 'application/json';
@@ -202,13 +251,14 @@ function outputOk(res, provider, result, isStream, model) {
   // openai: 直接透传(注册 error 防崩溃;客户端断连时销毁上游流防泄漏)
   res.writeHead(result.status, ad.filterHeaders(result.headers));
   result.stream.on('error', (e) => { console.error('[proxy] upstream stream error:', e.message); res.destroy(); });
-  res.on('close', () => result.stream.destroy());
+  res.on('close', () => { result.stream.destroy(); noteClose(); });
   res.on('error', () => result.stream.destroy());
   return result.stream.pipe(res);
 }
 
-function outputFail(res, provider, result, attempts) {
+function outputFail(res, provider, result, attempts, rec) {
   if (result && result.error) {
+    if (rec) { rec.status = 0; rec.error = result.error.message; rec.attempts = attempts || rec.attempts; logRec(rec); }
     return json(res, 502, { error: { message: `proxy: upstream error ${result.error.code || result.error.message}` } });
   }
   const st = (result && result.status) || 502;
@@ -221,6 +271,12 @@ function outputFail(res, provider, result, attempts) {
         b = Buffer.from(JSON.stringify({ error: { message: j.error.message, type: j.error.type || 'api_error', upstream: true } }));
       }
     } catch { /* 原样 */ }
+  }
+  if (rec) { // 记录错误信息 + 上游原始错误返回
+    rec.status = st; rec.attempts = attempts || rec.attempts;
+    rec.error = (result && result.body) ? `upstream responded ${st}` : `proxy: upstream responded ${st}${attempts ? ` after ${attempts} attempts` : ''}`;
+    rec.res = rec.res === null ? b.toString('utf8') : rec.res;
+    logRec(rec);
   }
   res.writeHead(st, { 'Content-Type': (result && result.headers && result.headers['content-type']) || 'application/json' });
   res.end(b);
@@ -330,6 +386,16 @@ async function handleApi(req, res, pathname, method) {
       status: 'ok', since: new Date(startTime).toISOString(), uptime: Math.floor((Date.now() - startTime) / 1000),
       ...stats.summary(),
     });
+  }
+  if (pathname === '/api/requests/dates' && method === 'GET') {
+    return json(res, 200, { dates: requests.dates() });
+  }
+  if (pathname === '/api/requests' && method === 'GET') {
+    const q = new URL(req.url, 'http://x').searchParams;
+    return json(res, 200, requests.list(q.get('date') || '', {
+      model: q.get('model') || '', status: q.get('status') || '', q: q.get('q') || '',
+      offset: q.get('offset') || '0', limit: q.get('limit') || '50',
+    }));
   }
   if (isConf && method === 'GET') {
     const cfg = config.load();
@@ -486,6 +552,8 @@ const server = http.createServer((req, res) => {
 });
 
 function start() {
+  requests.cleanup(); // 启动清理过期调用日志
+  setInterval(() => requests.cleanup(), 24 * 3600 * 1000).unref();
   server.listen(PORT, BIND_HOST, () => {
     const cfg = config.load();
     console.log(`[easy-llm-proxy] http://127.0.0.1:${PORT} | providers: ${cfg.providers.length} | models: ${cfg.providers.reduce((n, p) => n + p.models.length, 0)} | keys: ${cfg.providers.reduce((n, p) => n + p.models.reduce((x, m) => x + m.keys.length, 0), 0)}`);

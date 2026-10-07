@@ -114,6 +114,22 @@
   </section>
 </main>
 
+  <!-- 调用记录 -->
+  <section id="view-requests" class="view hidden">
+    <div class="bar">
+      <h2>调用记录 <small>原始请求/原始返回/错误信息(按天落盘,保留 7 天)</small></h2>
+      <div class="req-filters">
+        <select id="req-date"></select>
+        <input id="req-model" placeholder="模型筛选" style="width:110px">
+        <input id="req-status" placeholder="状态码" style="width:80px">
+        <input id="req-q" placeholder="内容关键词" style="width:140px">
+        <button id="btn-req-search" class="btn small">查询</button>
+        <button id="btn-req-refresh" class="btn small ghost">↻</button>
+      </div>
+    </div>
+    <div id="req-list" class="req-list"></div>
+  </section>
+
 <!-- 修改账号 -->
 <div id="account-modal" class="modal hidden">
   <div class="modal-card">
