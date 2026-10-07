@@ -47,12 +47,14 @@ function normalizeProvider(p, i) {
   const pickLimit = (m) => (Number.isInteger(m.usageLimit) && m.usageLimit >= 0 ? m.usageLimit : defUsageLimit);
   const pickSeconds = (m) => (Number.isInteger(m.useSeconds) && m.useSeconds >= 0 ? m.useSeconds : defUseSeconds);
 
-  // v1 旧格式: 顶层 keys 数组 → 单 model
+  // key 属于 provider 级(共享池);model 也可单独覆盖 keys(兼容)
+  const providerKeys = Array.isArray(p.keys) ? p.keys.filter((k) => typeof k === 'string' && k.length) : [];
   const models = [];
   if (Array.isArray(p.models) && p.models.length) {
     for (const m of p.models) {
       if (!m || !m.id) continue;
-      const keys = Array.isArray(m.keys) ? m.keys.filter((k) => typeof k === 'string' && k.length) : [];
+      const ownKeys = Array.isArray(m.keys) ? m.keys.filter((k) => typeof k === 'string' && k.length) : [];
+      const keys = ownKeys.length ? ownKeys : providerKeys; // model 无 key → 共享 provider 池
       if (!keys.length) continue;
       models.push({
         id: String(m.id),
@@ -63,9 +65,8 @@ function normalizeProvider(p, i) {
       });
     }
   }
-  const legacyKeys = Array.isArray(p.keys) ? p.keys.filter((k) => typeof k === 'string' && k.length) : [];
-  if (!models.length && legacyKeys.length) {
-    models.push({ id: 'default', weight: 100, usageLimit: defUsageLimit, useSeconds: defUseSeconds, keys: legacyKeys });
+  if (!models.length && providerKeys.length) {
+    models.push({ id: 'default', weight: 100, usageLimit: defUsageLimit, useSeconds: defUseSeconds, keys: providerKeys });
   }
   if (!models.length) return null;
 
@@ -78,6 +79,7 @@ function normalizeProvider(p, i) {
     extraHeaders: (p.extraHeaders && typeof p.extraHeaders === 'object') ? p.extraHeaders : {},
     usageLimit: defUsageLimit,
     useSeconds: defUseSeconds,
+    keys: providerKeys,
     models,
   };
 }

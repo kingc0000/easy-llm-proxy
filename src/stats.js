@@ -38,6 +38,13 @@ function load() {
 
 let STATE = load();
 let EVENTS = []; // 内存环形
+
+/** 清空全部统计(管理 API 重置按钮) */
+function reset() {
+  STATE = { keys: {}, trends: {}, errorTypes: {}, events: [], since: Date.now() };
+  EVENTS = [];
+  save();
+}
 let lastHour = hourKey(Date.now());
 
 function hourKey(ts) { return new Date(ts).toISOString().slice(0, 13); } // "2024-10-07T21" (UTC)
@@ -220,4 +227,6 @@ setInterval(save, SAVE_INTERVAL_MS);
 process.on('SIGTERM', () => { save(); process.exit(0); });
 process.on('SIGINT', () => { save(); process.exit(0); });
 
-module.exports = { bump, markLatency, markError, markTokens, recordEvent, save, snapshot, summary };
+module.exports = { bump, markLatency, markError, markTokens, recordEvent, save, snapshot, summary,
+  reset
+};

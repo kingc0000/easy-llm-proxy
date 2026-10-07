@@ -145,7 +145,8 @@ function degrade(p, st, failedModelId) {
 
 /** 总尝试上限(防死循环) */
 function maxAttempts(p) {
-  return p.models.reduce((n, m) => n + m.keys.length, 0) * 2 + p.models.length;
+  const uniqueKeys = new Set(p.models.flatMap((m) => m.keys)).size; // 共享池去重
+  return uniqueKeys * 2 + p.models.length;
 }
 
 module.exports = { modelsSorted, mainModel, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey };

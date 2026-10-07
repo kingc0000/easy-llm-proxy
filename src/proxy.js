@@ -388,6 +388,10 @@ async function handleApi(req, res, pathname, method) {
       ...stats.summary(),
     });
   }
+  if (pathname === '/api/stats/reset' && method === 'POST') {
+    stats.reset();
+    return json(res, 200, { ok: true });
+  }
   if (pathname === '/api/requests/dates' && method === 'GET') {
     return json(res, 200, { dates: requests.dates() });
   }
@@ -400,7 +404,9 @@ async function handleApi(req, res, pathname, method) {
   }
   if (isConf && method === 'GET') {
     const cfg = config.load();
-    return json(res, 200, cfg);
+    // 响应层剥离 model.keys:key 属 provider 级,models 共享(内部 balance 仍需,仅接口隐藏)
+    const out = { ...cfg, providers: cfg.providers.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m, keys: undefined })) })) };
+    return json(res, 200, out);
   }
   if (isConf && (method === 'PUT' || method === 'POST')) {
     // 整体替换配置: 去重同 name provider(后覆盖前),避免同名共享状态
@@ -507,7 +513,7 @@ const server = http.createServer((req, res) => {
         status: 'ok', version: PKG.version, uptime: Math.floor((Date.now() - startTime) / 1000),
         providers: cfg.providers.length,
         totalModels: cfg.providers.reduce((n, p) => n + p.models.length, 0),
-        totalKeys: cfg.providers.reduce((n, p) => n + p.models.reduce((x, m) => x + m.keys.length, 0), 0),
+        totalKeys: cfg.providers.reduce((n, p) => n + (Array.isArray(p.keys) && p.keys.length ? p.keys.length : new Set(p.models.flatMap((m) => m.keys)).size), 0),
         providers_detail: cfg.providers.map((p) => ({ name: p.name, apiType: p.apiType, models: p.models.map((m) => ({ id: m.id, weight: m.weight, keys: m.keys.length })) })),
       });
     }

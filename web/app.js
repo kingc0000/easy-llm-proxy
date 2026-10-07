@@ -89,7 +89,7 @@ async function loadDashboard() {
             <b>${esc(p.name)}</b>
           </div>
           <div class="card-actions">
-            <button class="btn small" onclick="testProvider('${jesc(p.name)}')">🔌</button>
+            <button class="btn small" title="测试连接" onclick="testProvider('${jesc(p.name)}')">▶ 测试</button>
             <button class="btn small" onclick="openEditor('${jesc(p.name)}')">✏️</button>
             <button class="btn small danger" onclick="deleteProvider('${jesc(p.name)}')">🗑</button>
           </div>
@@ -98,8 +98,8 @@ async function loadDashboard() {
           <div class="mono">${esc(p.baseURL)}</div>
           <div class="models">
             ${p.models.map((m) => `
-              <span class="model-chip" title="${esc(m.id)} · 权重 ${m.weight} · keys: ${esc(m.keys.join(', '))}">
-                ${esc(m.id)} <em>w${m.weight}</em> <i>${m.keys.length}keys</i>
+              <span class="model-chip" title="${esc(m.id)} · 权重 ${m.weight} · 共享 provider 级 key 池">
+                ${esc(m.id)} <em>w${m.weight}</em> <i>openai</i>
               </span>`).join('')}
           </div>
           <div class="card-meta">降级默认: 成功 ${p.usageLimit} 次 或 ${p.useSeconds}s 切回主</div>
@@ -130,6 +130,7 @@ async function openEditor(name) {
   $('#f-extraHeaders').value = p.extraHeaders && Object.keys(p.extraHeaders).length ? JSON.stringify(p.extraHeaders) : '';
   $('#f-usageLimit').value = p.usageLimit ?? 5;
   $('#f-useSeconds').value = p.useSeconds ?? 10;
+  renderKeys(p.keys || (p.models && p.models[0] && p.models[0].keys));
   renderModels(p.models);
   show('editor');
 }
@@ -141,10 +142,36 @@ function modelRow(m, i) {
     <input class="m-weight" type="number" min="1" max="100" value="${m.weight || 100}" title="权重 1-100,越大越优先">
     <input class="m-usage" type="number" min="0" value="${m.usageLimit ?? ''}" placeholder="成功次数" title="降级后成功 N 次切回主(0=不限)">
     <input class="m-seconds" type="number" min="0" value="${m.useSeconds ?? ''}" placeholder="秒数" title="降级后 N 秒切回主(0=不限)">
-    <textarea class="m-keys" rows="2" placeholder="每行一个 key">${esc(m.keys.join('\n'))}</textarea>
+    <span class="m-keys-note" title="key 在 provider 级统一管理,全部 model 共享">shared keys</span>
     <button type="button" class="btn small danger" onclick="delModel(this)">✕</button>
   </div>`;
 }
+
+function maskKey(k) { return (k && k.length > 12) ? k.slice(0, 8) + '…' + k.slice(-4) : k; }
+
+function renderKeys(keys) {
+  const rows = (keys || []).map((k, i) => `
+    <div class="pkey-row" data-key="${esc(k)}">
+      <span class="pkey-idx">key${i + 1}</span>
+      <span class="mono">${esc(maskKey(k))}</span>
+      <button type="button" class="btn small danger" onclick="delKey(this)">−</button>
+    </div>`).join('');
+  $('#p-keys').innerHTML = rows + (rows ? '' : '<div class="empty" style="padding:.4rem 0">还没有 key,点击下方 + Key 添加</div>');
+}
+function addKeyRow() {
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div class="pkey-row new">
+      <span class="pkey-idx">key${$$('#p-keys .pkey-row').length + 1}</span>
+      <input placeholder="输入真实 key" autocomplete="off">
+      <button type="button" class="btn small danger" onclick="delKey(this)">−</button>
+    </div>`.trim();
+  const row = div.firstChild;          // appendChild 移动节点后 div.firstChild 会变 null,先存引用
+  $('#p-keys').appendChild(row);
+  row.querySelector('input').focus();
+}
+function delKey(btn) { btn.closest('.pkey-row').remove(); }
+window.delKey = delKey;
 
 function renderModels(models) {
   $('#models').innerHTML = models.map(modelRow).join('') || '<div class="empty" style="padding:.6rem">还没有 model,点击下方添加</div>';
@@ -158,18 +185,22 @@ function collectProvider() {
   if (!name) throw new Error('名称必填');
   const models = $$('#models .model-row').map((r) => {
     const id = r.querySelector('.m-id').value.trim();
-    const keys = r.querySelector('.m-keys').value.split('\n').map((k) => k.trim()).filter(Boolean);
     const weight = parseInt(r.querySelector('.m-weight').value, 10);
-    if (!id || !keys.length) return null;
+    if (!id) return null;
     return {
       id,
       weight: weight >= 1 && weight <= 100 ? weight : 100,
       usageLimit: numOrNull(r.querySelector('.m-usage').value),
       useSeconds: numOrNull(r.querySelector('.m-seconds').value),
-      keys,
     };
   }).filter(Boolean);
-  if (!models.length) throw new Error('至少需要一个有效的 model(含 id 与 key)');
+  if (!models.length) throw new Error('至少需要一个有效的 model(id 必填)');
+  const keys = $$('#p-keys .pkey-row').map((r) => {
+    const inp = r.querySelector('input');
+    if (inp) return inp.value.trim();
+    return r.dataset.key || '';
+  }).filter(Boolean);
+  if (!keys.length) throw new Error('至少需要一个 provider 级 key');
   let extraHeaders = {};
   const eh = $('#f-extraHeaders').value.trim();
   if (eh) { try { extraHeaders = JSON.parse(eh); } catch { throw new Error('extraHeaders 不是合法 JSON'); } }
@@ -182,6 +213,7 @@ function collectProvider() {
     extraHeaders,
     usageLimit: numOrNull($('#f-usageLimit').value),
     useSeconds: numOrNull($('#f-useSeconds').value),
+    keys,
     models,
   };
 }
@@ -200,6 +232,7 @@ $('#editor-form').addEventListener('submit', async (e) => {
   } catch (err) { msg('❌ ' + err.message, true); }
 });
 
+$('#btn-add-key').addEventListener('click', addKeyRow);
 $('#btn-add-model').addEventListener('click', () => {
   const div = document.createElement('div');
   div.innerHTML = modelRow({ id: 'new-model', weight: 90, usageLimit: null, useSeconds: null, keys: [] }, $$('#models .model-row').length).trim();
@@ -238,6 +271,7 @@ $('#btn-add').addEventListener('click', async () => {
   $('#f-apiPath').value = ''; $('#f-apiKeyHeader').value = '';
   $('#f-extraHeaders').value = '';
   $('#f-usageLimit').value = 5; $('#f-useSeconds').value = 10;
+  renderKeys([]);
   renderModels(tpl.models);
   show('editor');
 });
@@ -253,7 +287,7 @@ $('#btn-test').addEventListener('click', async () => {
     const r = await api('/api/providers/' + encodeURIComponent(p.name) + '/test', { method: 'POST', body: JSON.stringify({ provider: p }) });
     alert(`${p.name} 测试: ${r.ok ? '✅ 可达' : '❌ 失败'} status=${r.status} 耗时=${r.ms}ms\n${r.error ? r.error : (r.sample || '')}`);
   } catch (err) { alert('测试失败: ' + err.message); }
-  finally { const btn = $('#btn-test'); btn.disabled = false; btn.textContent = '🔌 测试连接'; }
+  finally { const btn = $('#btn-test'); btn.disabled = false; btn.textContent = '▶ 测试连接'; }
 });
 
 /* ---------- 统计 ---------- */
@@ -338,7 +372,7 @@ async function loadStats() {
     renderEvents(d.recentEvents);
     $('#stats-table tbody').innerHTML = d.byKey.map((s) => `
       <tr>
-        <td>${esc(s.provider)}</td><td>${esc(s.model)}</td><td class="mono">${esc(s.key)}</td>
+        <td>${esc(s.provider)}</td><td>${esc(s.model)}</td><td class="mono" title="${esc(s.key)}">${esc(maskKey(s.key))}</td>
         <td>${s.requests}</td><td>${s.ok}</td><td>${s.errors}</td><td>${s.retries}</td>
         <td>${(s.promptTokens || 0).toLocaleString()}</td><td>${(s.cachedTokens || 0).toLocaleString()}</td><td>${(s.completionTokens || 0).toLocaleString()}</td>
         <td>${fmtBytes(s.outputBytes)}</td><td>${s.avgMs}ms</td>
@@ -350,6 +384,14 @@ async function loadStats() {
   }
 }
 $('#btn-refresh-stats').addEventListener('click', loadStats);
+$('#btn-reset-stats').addEventListener('click', async () => {
+  if (!confirm('确定清空全部统计?此操作不可恢复')) return;
+  try {
+    await api('/api/stats/reset', { method: 'POST' });
+    await loadStats();
+    alert('✅ 统计已重置');
+  } catch (e) { alert('重置失败: ' + e.message); }
+});
 
 /* ---------- 调用记录 ---------- */
 async function loadRequestDates() {

@@ -83,7 +83,11 @@
         <label>默认 useSeconds<small>降级后几秒切回主 model(0=不限)</small><input id="f-useSeconds" type="number" min="0" value="10"></label>
       </div>
 
-      <h3>Models <small>权重越大越优先;主 model 限流→按权重降级,达标切回</small></h3>
+      <h3>Provider Keys <small>key1/key2/key3 表示;真实 key 仅服务端可见</small></h3>
+      <div id="p-keys"></div>
+      <button type="button" id="btn-add-key" class="btn">+ Key</button>
+
+      <h3>Models <small>权重越大越优先;主 model 限流→按权重降级,达标切回;key 统一走 provider 级共享池</small></h3>
       <div id="models"></div>
       <button type="button" id="btn-add-model" class="btn">+ Model</button>
 
@@ -97,7 +101,12 @@
 
   <!-- 统计 -->
   <section id="view-stats" class="view hidden">
-    <div class="bar"><h2>用量统计</h2><button id="btn-refresh-stats" class="btn ghost">↻ 刷新</button></div>
+    <div class="bar"><h2>用量统计</h2>
+      <div style="display:flex;gap:.5rem">
+        <button id="btn-reset-stats" class="btn small danger">🗑 重置</button>
+        <button id="btn-refresh-stats" class="btn ghost">↻ 刷新</button>
+      </div>
+    </div>
 
     <div id="stats-summary" class="kpis"></div>
 
