@@ -189,7 +189,11 @@ function anthropicSseToOpenAI(model) {
 /* ---------- 上游请求 ---------- */
 function attempt(provider, key, path, method, payload) {
   return new Promise((resolve) => {
-    const up = new URL(provider.baseURL + (path.startsWith('/') ? path : '/' + path)); // 防 apiPath 无前导斜杠错位
+    let base = String(provider.baseURL || '').replace(/\/+$/, '');
+    const p = path.startsWith('/') ? path : '/' + path; // 防 apiPath 无前导斜杠错位
+    const ver = base.match(/\/v\d+(?:beta)?$/); // baseURL 已带 /v1(或 /v1beta)时避免双拼
+    if (ver && p.startsWith(ver[0])) base = base.slice(0, -ver[0].length);
+    const up = new URL(base + p);
     const isHttps = up.protocol === 'https:';
     const opts = {
       hostname: up.hostname,
