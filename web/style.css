@@ -190,6 +190,15 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 /* 用户区 */
 .user-info { font-size: .84rem; color: var(--muted); margin: 0 .4rem; font-weight: 500; }
 
+/* GitHub 链接 + 版本号 */
+.gh-link {
+  display: inline-flex; align-items: center; gap: .35rem; text-decoration: none;
+  color: var(--muted); padding: .3rem .6rem; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); transition: all .18s ease; margin-left: .4rem;
+}
+.gh-link:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.gh-link .ver { font-size: .78rem; font-weight: 700; letter-spacing: .01em; }
+
 /* 弱密码提醒横幅 */
 .weak-banner {
   background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 10px;

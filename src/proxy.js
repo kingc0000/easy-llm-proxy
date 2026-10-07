@@ -14,6 +14,7 @@ const balance = require('./balance');
 const stats = require('./stats');
 const ad = require('./adapters');
 const auth = require('./auth');
+const PKG = require('../package.json');
 const requests = require('./requests');
 
 const PORT = parseInt(process.env.PROXY_PORT || '8787', 10);
@@ -503,7 +504,7 @@ const server = http.createServer((req, res) => {
     if (pathname === '/health' || pathname === '/healthz') {
       const cfg = config.load();
       return json(res, 200, {
-        status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000),
+        status: 'ok', version: PKG.version, uptime: Math.floor((Date.now() - startTime) / 1000),
         providers: cfg.providers.length,
         totalModels: cfg.providers.reduce((n, p) => n + p.models.length, 0),
         totalKeys: cfg.providers.reduce((n, p) => n + p.models.reduce((x, m) => x + m.keys.length, 0), 0),

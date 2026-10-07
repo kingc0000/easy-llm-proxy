@@ -45,6 +45,7 @@ async function loadHealth() {
   try {
     const h = await api('/health');
     $('#health').textContent = `✅ ${h.providers} providers / ${h.totalModels} models / ${h.totalKeys} keys`;
+    if (h.version) $('#ver').textContent = 'v' + h.version;
   } catch { $('#health').textContent = '❌ 服务异常'; }
 }
 
