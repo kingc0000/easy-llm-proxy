@@ -47,13 +47,28 @@ function normalizeProvider(p, i) {
   const pickLimit = (m) => (Number.isInteger(m.usageLimit) && m.usageLimit >= 0 ? m.usageLimit : defUsageLimit);
   const pickSeconds = (m) => (Number.isInteger(m.useSeconds) && m.useSeconds >= 0 ? m.useSeconds : defUseSeconds);
 
+  // key 归一: 字符串 或 {value,note} 对象(备注非必填)
+  const normalizeKeys = (arr) => {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const item of arr) {
+      let value = '', note = '';
+      if (typeof item === 'string') value = item;
+      else if (item && typeof item === 'object') { value = String(item.value ?? item.key ?? ''); note = String(item.note ?? ''); }
+      value = value.trim();
+      if (value && !out.some((k) => k.value === value)) out.push({ value, note });
+    }
+    return out;
+  };
   // key 属于 provider 级(共享池);model 也可单独覆盖 keys(兼容)
-  const providerKeys = Array.isArray(p.keys) ? p.keys.filter((k) => typeof k === 'string' && k.length) : [];
+  const providerKeysRaw = normalizeKeys(p.keys);
+  const providerKeys = providerKeysRaw.map((k) => k.value);
+  const keyNotes = Object.fromEntries(providerKeysRaw.map((k) => [k.value, k.note]));
   const models = [];
   if (Array.isArray(p.models) && p.models.length) {
     for (const m of p.models) {
       if (!m || !m.id) continue;
-      const ownKeys = Array.isArray(m.keys) ? m.keys.filter((k) => typeof k === 'string' && k.length) : [];
+      const ownKeys = normalizeKeys(m.keys).map((k) => k.value);
       const keys = ownKeys.length ? ownKeys : providerKeys; // model 无 key → 共享 provider 池
       if (!keys.length) continue;
       models.push({
@@ -80,6 +95,7 @@ function normalizeProvider(p, i) {
     usageLimit: defUsageLimit,
     useSeconds: defUseSeconds,
     keys: providerKeys,
+    keyNotes,
     models,
   };
 }
@@ -133,7 +149,7 @@ function save(cfg) {
   const tmp = CONFIG_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 }); // 含真实 key,仅属主可读
   fs.renameSync(tmp, CONFIG_FILE);
-  _cache = { mtime: fs.statSync(CONFIG_FILE).mtimeMs, data: null }; // 失效缓存下次重读
+  _cache = { mtime: -1, data: null }; // 失效缓存: mtime=-1 永不匹配,下次 load 必然重读文件 (fix: 此前同步成新文件 mtime 导致 load 误判命中返回空配置)
 }
 
 module.exports = { load, save, CONFIG_FILE };
