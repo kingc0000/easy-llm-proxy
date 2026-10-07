@@ -22,9 +22,7 @@ async function api(path, opts = {}) {
 /* 401 处理: 显示引导并聚焦令牌输入框 */
 function maybeNeedToken(e) {
   if (e && e.needToken) {
-    const ti = document.querySelector('input[placeholder="ADMIN_TOKEN"]');
-    if (ti) { ti.style.borderColor = '#ff5f56'; ti.focus(); }
-    $('#health').textContent = '🔑 需要管理令牌: 右上角输入 ADMIN_TOKEN';
+    $('#health').textContent = '🔑 需要登录';
     return true;
   }
   return false;
@@ -255,7 +253,7 @@ function renderTrend(hours) {
   const svg = $('#trend-chart');
   const W = 720, H = 150, PAD = 6;
   const list = hours.slice(-24);
-  if (!list.length) { svg.innerHTML = '<text x="360" y="75" text-anchor="middle" fill="#8b93a7" font-size="13">暂无数据</text>'; return; }
+  if (!list.length) { svg.innerHTML = '<text x="360" y="75" text-anchor="middle" fill="#94a3b8" font-size="13">暂无数据</text>'; return; }
   const maxReq = Math.max(1, ...list.map((h) => h.requests));
   const bw = (W - PAD * 2) / list.length;
   let bars = '', line = '';
@@ -263,14 +261,14 @@ function renderTrend(hours) {
     const x = PAD + i * bw + bw * 0.15;
     const bh = (h.requests / maxReq) * (H - 34);
     const y = H - 20 - bh;
-    bars += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${bh || 1}" rx="2" fill="${h.requests ? '#4f8cff' : '#2a2f3f'}"><title>${h.hour} 请求 ${h.requests} 成功率 ${h.successRate ?? '-'}%</title></rect>`;
+    bars += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${bh || 1}" rx="3" fill="${h.requests ? '#3b82f6' : '#dce3ef'}"><title>${h.hour} 请求 ${h.requests} 成功率 ${h.successRate ?? '-'}%</title></rect>`;
     const rateY = H - 20 - (h.successRate ?? 0) / 100 * (H - 34);
     line += `${i ? 'L' : 'M'}${x + bw * 0.35},${rateY} `;
   });
   svg.innerHTML = bars +
-    `<path d="${line}" fill="none" stroke="#34c77b" stroke-width="1.6" stroke-dasharray="4 2"/>` +
-    `<line x1="${PAD}" y1="${H - 20}" x2="${W - PAD}" y2="${H - 20}" stroke="#2a2f3f"/>` +
-    (list.length <= 13 ? list.map((h, i) => `<text x="${PAD + i * bw + bw * 0.35}" y="${H - 6}" text-anchor="middle" fill="#8b93a7" font-size="9">${fmtHour(h.hour)}</text>`).join('') : '');
+    `<path d="${line}" fill="none" stroke="#10b981" stroke-width="1.8" stroke-dasharray="4 2"/>` +
+    `<line x1="${PAD}" y1="${H - 20}" x2="${W - PAD}" y2="${H - 20}" stroke="#dce3ef"/>` +
+    (list.length <= 13 ? list.map((h, i) => `<text x="${PAD + i * bw + bw * 0.35}" y="${H - 6}" text-anchor="middle" fill="#94a3b8" font-size="9">${fmtHour(h.hour)}</text>`).join('') : '');
 }
 
 function renderErrors(err = {}) {
