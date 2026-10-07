@@ -371,7 +371,7 @@ async function loadRequests() {
         </div>
         <div class="req-detail hidden" id="reqd-${i}">
           <div><h4>原始请求${r.reqTruncated ? '(截断)' : ''}</h4><pre>${esc(detailJson(r.req, r.reqTruncated))}</pre></div>
-          <div><h4>原始返回${r.truncated ? '(超出512KB截断)' : (r.apiType === 'anthropic' ? '(上游原始)' : '')}</h4><pre>${esc(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res))}</pre></div>
+          <div><h4>原始返回${r.truncated ? '(原始超出512KB截断)' : ''}${r.resClipped ? '(列表仅显示前128KB,磁盘完整)' : ''}${(!r.truncated && !r.resClipped && r.apiType === 'anthropic') ? '(上游原始)' : ''}</h4><pre>${esc(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res))}</pre></div>
         </div>
       </div>`;
     }).join('');
@@ -399,8 +399,9 @@ function msg(text, err = false) {
 /* ---------- 登录 ---------- */
 function showLogin(msgText) {
   $$('.tab').forEach((t) => t.classList.remove('active'));
+  $('#app-header').classList.add('hidden'); // 登录页不显示顶部导航条
   $('#view-login').classList.remove('hidden');
-  ['view-dashboard', 'view-editor', 'view-stats'].forEach((v) => $('#' + v).classList.add('hidden'));
+  ['view-dashboard', 'view-editor', 'view-stats', 'view-requests'].forEach((v) => $('#' + v).classList.add('hidden'));
   $('#user-info').classList.add('hidden');
   $('#btn-account').classList.add('hidden');
   $('#btn-logout').classList.add('hidden');
@@ -408,6 +409,7 @@ function showLogin(msgText) {
   if (msgText) $('#login-msg').className = 'msg err';
 }
 function showMain(username) {
+  $('#app-header').classList.remove('hidden');
   $('#view-login').classList.add('hidden');
   $('#user-info').classList.remove('hidden');
   $('#btn-account').classList.remove('hidden');

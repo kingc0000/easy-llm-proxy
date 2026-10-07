@@ -26,7 +26,8 @@ function dayKey(d) {
 function log(rec) {
   try {
     fs.mkdirSync(DIR, { recursive: true });
-    const line = JSON.stringify(rec) + '\n';
+    const { logged, resChunks, ...rest } = rec; // 剔除内部字段
+    const line = JSON.stringify(rest) + '\n';
     fs.appendFile(path.join(DIR, dayKey(new Date(rec.t || Date.now())) + '.jsonl'), line, { mode: 0o600 }, () => {});
   } catch { /* 日志失败不阻塞主流程 */ }
 }
@@ -66,7 +67,14 @@ function list(date, opts = {}) {
   const total = rows.length;
   const from = Math.max(0, parseInt(opts.offset || '0', 10));
   const size = Math.min(200, parseInt(opts.limit || '50', 10));
-  return { total, date: String(date || dayKey(new Date())), rows: rows.slice(from, from + size) };
+  const resLimit = parseInt(opts.resLimit || (128 * 1024).toString(), 10); // API 返回的响应原文上限(磁盘文件保留完整)
+  const out = rows.slice(from, from + size).map((r) => {
+    if (r.res && typeof r.res === 'string' && r.res.length > resLimit) {
+      return { ...r, res: r.res.slice(0, resLimit), resClipped: true };
+    }
+    return r;
+  });
+  return { total, date: String(date || dayKey(new Date())), rows: out };
 }
 
 module.exports = { log, cleanup, dates, list, DIR, KEEP_DAYS, MAX_REC, MAX_REQ };
