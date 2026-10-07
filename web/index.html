@@ -9,7 +9,7 @@
 <body>
 <header id="app-header">
   <div class="brand">
-    <span class="logo">⚡</span>
+    <span class="logo"><svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><defs><linearGradient id="lg-h" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect x="1.5" y="1.5" width="29" height="29" rx="8.5" fill="url(#lg-h)"/><path d="M17.5 6.5 L9.5 18 h5.5 l-1.5 7.5 8-11.5 h-5.5 z" fill="#fff" stroke="#fff" stroke-width=".8" stroke-linejoin="round"/></svg></span>
     <h1>easy-llm-proxy</h1>
     <span class="sub">多 Key 多 Model 加权轮询代理</span>
   </div>
@@ -32,8 +32,9 @@
   <div id="weak-banner" class="weak-banner hidden">⚠ 当前正在使用默认密码 <b>admin/admin123</b>，公网风险极高 — 请点右上角 <b>⚙ 账号</b> 立即修改！</div>
   <!-- 登录 -->
   <section id="view-login" class="view">
+    <div class="login-wrap">
     <div class="login-card">
-      <div class="login-logo">⚡</div>
+      <div class="login-logo"><svg viewBox="0 0 32 32" width="52" height="52" aria-hidden="true"><defs><linearGradient id="lg-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect x="1.5" y="1.5" width="29" height="29" rx="8.5" fill="url(#lg-l)"/><path d="M17.5 6.5 L9.5 18 h5.5 l-1.5 7.5 8-11.5 h-5.5 z" fill="#fff" stroke="#fff" stroke-width=".8" stroke-linejoin="round"/></svg></div>
       <h2>easy-llm-proxy</h2>
       <p class="login-sub">管理面板 · 请输入账号密码</p>
       <form id="login-form">
@@ -43,6 +44,7 @@
         <div id="login-msg" class="msg"></div>
       </form>
     </div>
+    </div>
   </section>
 
   <!-- Dashboard -->
@@ -51,7 +53,15 @@
       <h2>Provider 列表</h2>
       <button id="btn-add" class="btn primary">+ 新增 Provider</button>
     </div>
-    <div id="providers" class="cards"></div>
+    <div class="dash-layout">
+      <aside class="side-nav" id="side-nav">
+        <div class="side-nav-title">Providers</div>
+        <div id="provider-nav" class="provider-nav"></div>
+      </aside>
+      <div class="side-main">
+        <div id="providers" class="cards"></div>
+      </div>
+    </div>
   </section>
 
   <!-- 编辑 -->

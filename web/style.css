@@ -14,6 +14,14 @@ body {
   background: var(--bg); background-attachment: fixed; color: var(--fg);
   font: 15px/1.65 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+body::before { /* 背景光晕装饰 */
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(640px 420px at 10% -4%, rgba(59, 130, 246, .16), transparent 62%),
+    radial-gradient(760px 520px at 96% 12%, rgba(99, 102, 241, .13), transparent 62%),
+    radial-gradient(560px 420px at 55% 112%, rgba(16, 185, 129, .10), transparent 62%);
 }
 
 /* ---------- 顶栏 ---------- */
@@ -24,7 +32,7 @@ header {
   border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
 }
 .brand { display: flex; align-items: baseline; gap: .6rem; }
-.logo { font-size: 1.45rem; }
+.logo { display: inline-flex; align-items: center; filter: drop-shadow(0 3px 8px rgba(59, 130, 246, .3)); }
 .brand h1 { font-size: 1.28rem; font-weight: 800; letter-spacing: -.01em;
   background: linear-gradient(90deg, var(--accent), var(--accent2));
   -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -159,12 +167,26 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .model-row { grid-template-columns: 1fr 1fr; } }
 
 /* ---------- 登录页 ---------- */
-.login-card {
-  max-width: 360px; margin: 9vh auto 0; background: #fff;
-  border: 1px solid var(--line); border-radius: 18px; padding: 2.3rem 2.4rem;
-  display: flex; flex-direction: column; gap: .7rem; box-shadow: 0 12px 40px rgba(16, 24, 40, .1);
+.login-wrap { position: relative; max-width: 380px; margin: 8vh auto 0; }
+.login-wrap::before { /* 卡片背后光晕 */
+  content: ''; position: absolute; inset: -8% -14%; z-index: -1;
+  background: radial-gradient(320px 220px at 30% 20%, rgba(59, 130, 246, .22), transparent 65%),
+              radial-gradient(280px 200px at 75% 80%, rgba(99, 102, 241, .18), transparent 65%);
+  filter: blur(6px);
 }
-.login-logo { font-size: 2.4rem; text-align: center; }
+.login-card {
+  background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 2.4rem 2.5rem 2.1rem;
+  display: flex; flex-direction: column; gap: .7rem; box-shadow: 0 16px 48px rgba(16, 24, 40, .12);
+  position: relative; overflow: hidden;
+}
+.login-card::after { /* 底部渐变点缀条 */
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent));
+}
+.login-logo {
+  text-align: center; display: flex; justify-content: center;
+  filter: drop-shadow(0 6px 14px rgba(59, 130, 246, .35));
+}
 .login-card h2 { margin: 0; text-align: center; font-size: 1.25rem; font-weight: 800;
   background: linear-gradient(90deg, var(--accent), var(--accent2));
   -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -234,3 +256,42 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   white-space: pre-wrap; word-break: break-all; line-height: 1.5;
 }
 @media (max-width: 700px) { .req-detail { grid-template-columns: 1fr; } }
+/* ---------- Dashboard 左侧导航 ---------- */
+.dash-layout { display: grid; grid-template-columns: 200px 1fr; gap: 1.2rem; align-items: start; }
+.side-nav {
+  position: sticky; top: 84px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: .7rem .5rem; box-shadow: var(--shadow-sm);
+  max-height: calc(100vh - 110px); overflow-y: auto;
+}
+.side-nav-title { font-size: .74rem; font-weight: 700; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; padding: .2rem .6rem .5rem; }
+.provider-nav { display: flex; flex-direction: column; gap: .15rem; }
+.provider-nav .pn-item {
+  display: flex; align-items: center; gap: .45rem; padding: .42rem .6rem; border-radius: 8px;
+  cursor: pointer; font-size: .86rem; font-weight: 500; color: var(--fg); border: 1px solid transparent;
+  transition: all .15s ease;
+}
+.provider-nav .pn-item:hover { background: var(--panel2); }
+.provider-nav .pn-item .pn-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+}
+.provider-nav .pn-item .pn-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-nav .pn-item.active {
+  background: rgba(59, 130, 246, .12); border-color: rgba(59, 130, 246, .3); color: var(--accent); font-weight: 600;
+}
+.side-main { min-width: 0; }
+
+/* 卡片高亮描边 */
+.card { scroll-margin-top: 90px; }
+.card.hl {
+  border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59, 130, 246, .18), 0 8px 24px rgba(16, 24, 40, .09);
+  animation: hl-pulse 1.6s ease;
+}
+@keyframes hl-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, .35), 0 8px 24px rgba(16, 24, 40, .09); }
+  60% { box-shadow: 0 0 0 10px rgba(59, 130, 246, .08), 0 8px 24px rgba(16, 24, 40, .09); }
+  100% { box-shadow: 0 0 0 3px rgba(59, 130, 246, .18), 0 8px 24px rgba(16, 24, 40, .09); }
+}
+@media (max-width: 860px) {
+  .dash-layout { grid-template-columns: 1fr; }
+  .side-nav { position: static; max-height: 180px; overflow-y: auto; }
+}

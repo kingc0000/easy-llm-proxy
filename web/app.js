@@ -50,16 +50,39 @@ async function loadHealth() {
 }
 
 /* ---------- Dashboard ---------- */
+/* 高亮导航项/卡片,并滚动到卡片 */
+function focusProvider(i) {
+  document.querySelectorAll('.pn-item').forEach((n) => n.classList.toggle('active', Number(n.dataset.i) === i));
+  const card = document.querySelector(`.card[data-i="${i}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('hl');
+}
+/* 点击空白处取消高亮 */
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.closest('.pn-item') || t.closest('.card')) return;
+  document.querySelectorAll('.card.hl').forEach((c) => c.classList.remove('hl'));
+  document.querySelectorAll('.pn-item.active').forEach((n) => n.classList.remove('active'));
+});
+
 async function loadDashboard() {
   try {
     const d = await api('/api/providers');
     const el = $('#providers');
     if (!d.providers.length) {
       el.innerHTML = '<div class="empty">还没有 provider,点击右上角新增</div>';
+      $('#provider-nav').innerHTML = '';
       return;
     }
-    el.innerHTML = d.providers.map((p) => `
-      <div class="card">
+    const sorted = [...d.providers].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')); // 按名称排序
+    $('#provider-nav').innerHTML = sorted.map((p, i) => `
+      <div class="pn-item" data-i="${i}" onclick="focusProvider(${i})" title="${esc(p.name)}">
+        <span class="pn-dot" style="background:${p.apiType === 'anthropic' ? '#d97757' : ''}"></span>
+        <span class="pn-name">${esc(p.name)}</span>
+      </div>`).join('');
+    el.innerHTML = sorted.map((p, i) => `
+      <div class="card" data-i="${i}">
         <div class="card-head">
           <div class="card-title">
             <span class="tag ${p.apiType}">${p.apiType}</span>
