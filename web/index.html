@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>easy-llm-proxy · 管理面板</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">⚡</span>
+    <h1>easy-llm-proxy</h1>
+    <span class="sub">多 Key 多 Model 加权轮询代理</span>
+  </div>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Providers</button>
+    <button class="tab" data-tab="stats">统计</button>
+    <span id="health" class="health">…</span>
+    <span id="user-info" class="user-info hidden"></span>
+    <button id="btn-account" class="btn small hidden">⚙ 账号</button>
+    <button id="btn-logout" class="btn small ghost hidden">退出</button>
+  </nav>
+</header>
+
+<main>
+  <div id="weak-banner" class="weak-banner hidden">⚠ 当前正在使用默认密码 <b>admin/admin123</b>，公网风险极高 — 请点右上角 <b>⚙ 账号</b> 立即修改！</div>
+  <!-- 登录 -->
+  <section id="view-login" class="view">
+    <div class="login-card">
+      <div class="login-logo">⚡</div>
+      <h2>easy-llm-proxy</h2>
+      <p class="login-sub">管理面板 · 请输入账号密码</p>
+      <form id="login-form">
+        <label>用户名<input id="f-login-user" required autocomplete="username"></label>
+        <label>密码<input id="f-login-pass" type="password" required autocomplete="current-password"></label>
+        <button type="submit" class="btn primary" style="width:100%">登 录</button>
+        <div id="login-msg" class="msg"></div>
+      </form>
+    </div>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="view-dashboard" class="view">
+    <div class="bar">
+      <h2>Provider 列表</h2>
+      <button id="btn-add" class="btn primary">+ 新增 Provider</button>
+    </div>
+    <div id="providers" class="cards"></div>
+  </section>
+
+  <!-- 编辑 -->
+  <section id="view-editor" class="view hidden">
+    <button id="btn-back" class="btn ghost">← 返回</button>
+    <h2 id="editor-title">编辑 Provider</h2>
+    <form id="editor-form">
+      <div class="grid2">
+        <label>名称<small>唯一标识,请求头 X-Provider-Name 使用</small><input id="f-name" required placeholder="sensenova"></label>
+        <label>apiType<select id="f-apiType">
+          <option value="openai">openai(OpenAI 兼容)</option>
+          <option value="anthropic">anthropic(原生 /v1/messages)</option>
+        </select></label>
+        <label>baseURL<input id="f-baseURL" required placeholder="https://api.xxx.com"></label>
+        <label>apiPath<small>可选,自定义 chat 路径</small><input id="f-apiPath" placeholder="留空自动"></label>
+        <label>apiKeyHeader<small>可选,自定义认证头名</small><input id="f-apiKeyHeader" placeholder="留空自动"></label>
+        <label>extraHeaders<small>JSON,如 {"anthropic-version":"2023-06-01"}</small><input id="f-extraHeaders" placeholder='{"k":"v"}'></label>
+        <label>默认 usageLimit<small>降级后成功几次切回主 model(0=不限)</small><input id="f-usageLimit" type="number" min="0" value="5"></label>
+        <label>默认 useSeconds<small>降级后几秒切回主 model(0=不限)</small><input id="f-useSeconds" type="number" min="0" value="10"></label>
+      </div>
+
+      <h3>Models <small>权重越大越优先;主 model 限流→按权重降级,达标切回</small></h3>
+      <div id="models"></div>
+      <button type="button" id="btn-add-model" class="btn">+ Model</button>
+
+      <div class="bar" style="margin-top:1.2rem">
+        <button type="button" id="btn-test" class="btn">🔌 测试连接</button>
+        <button type="submit" class="btn primary">💾 保存</button>
+        <span id="save-msg" class="msg"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- 统计 -->
+  <section id="view-stats" class="view hidden">
+    <div class="bar"><h2>用量统计</h2><button id="btn-refresh-stats" class="btn ghost">↻ 刷新</button></div>
+
+    <div id="stats-summary" class="kpis"></div>
+
+    <div class="charts">
+      <div class="chart-card">
+        <h3>请求趋势 (近 24 小时) <small>柱=请求数 线=成功率%</small></h3>
+        <svg id="trend-chart" width="100%" height="150" viewBox="0 0 720 150" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="chart-card">
+        <h3>错误类型分布</h3>
+        <div id="error-chart" class="barlist"></div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:1rem">Provider 汇总</h3>
+    <table id="provider-table">
+      <thead><tr><th>Provider</th><th>模型</th><th>请求</th><th>成功</th><th>成功率</th><th>重试</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h3 style="margin-top:1rem">降级事件 <small>限流 → 按权重降级记录</small></h3>
+    <div id="event-list" class="events"></div>
+
+    <h3 style="margin-top:1rem">Key 明细</h3>
+    <table id="stats-table">
+      <thead><tr><th>Provider</th><th>Model</th><th>Key</th><th>请求</th><th>成功</th><th>失败</th><th>重试</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th><th>平均(ms)</th><th>最后活跃</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<!-- 修改账号 -->
+<div id="account-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>修改账号</h3>
+    <form id="account-form">
+      <label>旧密码<input id="f-old-pass" type="password" required autocomplete="current-password"></label>
+      <label>新用户名<small>留空 = 不变</small><input id="f-new-user" autocomplete="username"></label>
+      <label>新密码<small>留空 = 不变;修改后需重新登录</small><input id="f-new-pass" type="password" autocomplete="new-password"></label>
+      <label>确认新密码<input id="f-new-pass2" type="password" autocomplete="new-password"></label>
+      <div class="bar">
+        <button type="button" id="btn-acct-close" class="btn ghost">取消</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+      <div id="account-msg" class="msg"></div>
+    </form>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

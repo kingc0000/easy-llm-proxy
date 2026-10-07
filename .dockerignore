@@ -1,0 +1,14 @@
+node_modules/
+.git/
+.gitignore
+*.log
+stats.json
+test/
+config/
+data/
+README.md
+deploy.sh
+docker-compose.yml
+Dockerfile
+.dockerignore
+config.example.json

@@ -1,0 +1,6 @@
+node_modules/
+*.log
+stats.json
+config/
+data/
+.admin_token

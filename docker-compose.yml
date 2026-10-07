@@ -1,0 +1,28 @@
+# easy-llm-proxy Docker 编排
+# 用法: ./deploy-docker.sh 或 docker compose up -d
+# 默认映射 8790:8787(与线上 sensenova-proxy 8787 / systemd 8790 并行不冲突)
+services:
+  easy-llm-proxy:
+    build: .
+    image: easy-llm-proxy:local
+    container_name: easy-llm-proxy
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PUBLIC_PORT:-8790}:8787"
+    environment:
+      - PROXY_PORT=8787
+      - BIND_HOST=0.0.0.0
+      - CONFIG_FILE=/etc/easy-llm-proxy/config.json
+      - STATS_FILE=/var/lib/easy-llm-proxy/stats.json
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
+    volumes:
+      # 配置目录: 放 config.json(首次启动自动从示例复制)
+      - ./config:/etc/easy-llm-proxy
+      # 统计持久化
+      - ./data:/var/lib/easy-llm-proxy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

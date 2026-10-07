@@ -1,0 +1,42 @@
+{
+  "defaultProvider": null,
+  "providers": [
+    {
+      "name": "sensenova",
+      "apiType": "openai",
+      "baseURL": "https://token.sensenova.cn",
+      "usageLimit": 5,
+      "useSeconds": 10,
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "weight": 100,
+          "usageLimit": 3,
+          "useSeconds": 10,
+          "keys": ["sk-这里放主key"]
+        },
+        {
+          "id": "sensenova-6.8-flash-lite",
+          "weight": 90,
+          "usageLimit": 1,
+          "useSeconds": 20,
+          "keys": ["sk-这里放备用key"]
+        }
+      ]
+    },
+    {
+      "name": "anthropic",
+      "apiType": "anthropic",
+      "baseURL": "https://api.anthropic.com",
+      "usageLimit": 5,
+      "useSeconds": 10,
+      "models": [
+        {
+          "id": "claude-sonnet-4-20250514",
+          "weight": 100,
+          "keys": ["sk-ant-这里放key"]
+        }
+      ]
+    }
+  ]
+}
