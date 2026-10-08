@@ -304,3 +304,15 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   .dash-layout { grid-template-columns: 1fr; }
   .side-nav { position: static; max-height: 180px; overflow-y: auto; }
 }
+
+/* ---------- 统计层级子表 ---------- */
+#provider-table .sp-row { cursor: pointer; }
+#provider-table .sm-row { cursor: pointer; background: var(--panel3); }
+#provider-table .sp-row:hover, #provider-table .sm-row:hover { background: var(--panel2); }
+#provider-table .arr { font-size: .7rem; color: var(--accent); margin-right: .2rem; display: inline-block; }
+#provider-table .sp-models > td, #provider-table .sm-keys > td { padding: .2rem .3rem .6rem; background: var(--bg2); }
+.sub-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.sub-table th { font-size: .72rem; color: var(--muted); font-weight: 600; text-align: left; padding: .42rem .6rem; background: var(--panel3); border-bottom: 1px solid var(--line); }
+.sub-table td { font-size: .82rem; padding: .38rem .6rem; border-bottom: 1px solid #f0f3f9; }
+.sub-table tr:last-child td { border-bottom: 0; }
+.sub-table .sk-row td { color: #3a4256; }

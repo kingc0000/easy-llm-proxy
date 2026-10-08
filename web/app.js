@@ -345,18 +345,71 @@ function renderErrors(err = {}) {
   }).join('') || '<div class="empty" style="padding:.6rem">暂无错误</div>';
 }
 
-function renderProviders(providers) {
-  $('#provider-table tbody').innerHTML = providers.map((p) => `
-    <tr>
-      <td><b>${esc(p.name)}</b></td>
-      <td>${p.models.map((m) => `${esc(m.id)}<span class="dim">(${m.requests})</span>`).join(' ')}</td>
-      <td>${p.requests}</td><td>${p.ok}</td>
-      <td>${p.requests ? Math.round(p.ok / p.requests * 1000) / 10 + '%' : '-'}</td>
-      <td>${p.retries}</td><td>${p.avgMs}ms</td>
-      <td>${(p.promptTokens || 0).toLocaleString()}</td><td>${(p.cachedTokens || 0).toLocaleString()}</td><td>${(p.completionTokens || 0).toLocaleString()}</td>
-      <td>${fmtBytes(p.outputBytes)}</td>
-    </tr>`).join('') || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
+const _rate = (req, ok) => (req ? Math.round(ok / req * 1000) / 10 + '%' : '-');
+const _arrow = (open) => open ? '<span class="arr">▼</span>' : '<span class="arr">▶</span>';
+
+/* 统计页: Provider 主表 → Models 子表 → Keys 子表(三级层级) */
+function renderStatsTree(providers, byKey) {
+  const keyMap = new Map(); // "provider\0model" -> [key..]
+  for (const s of byKey) {
+    const id = s.provider + '\u0000' + s.model;
+    if (!keyMap.has(id)) keyMap.set(id, []);
+    keyMap.get(id).push(s);
+  }
+  const rows = providers.map((p) => {
+    const modelRows = p.models.map((m) => {
+      const ks = keyMap.get(p.name + '\u0000' + m.id) || [];
+      const keyRows = ks.map((k) => `<tr class="sk-row">
+          <td class="mono">${esc(k.key)}</td><td>${k.requests}</td><td>${k.ok}</td><td>${k.errors}</td>
+          <td>${_rate(k.requests, k.ok)}</td><td>${k.avgMs}ms</td>
+          <td>${(k.promptTokens || 0).toLocaleString()}</td><td>${(k.cachedTokens || 0).toLocaleString()}</td><td>${(k.completionTokens || 0).toLocaleString()}</td>
+          <td>${fmtBytes(k.outputBytes)}</td><td>${k.lastSeen ? new Date(k.lastSeen).toLocaleTimeString() : '-'}</td>
+        </tr>`).join('');
+      return `<tr class="sm-row" data-p="${esc(p.name)}" data-m="${esc(m.id)}">
+          <td>${_arrow(0)} <b>${esc(m.id)}</b></td><td>${m.requests}</td><td>${m.ok}</td><td>${m.errors}</td>
+          <td>${_rate(m.requests, m.ok)}</td><td>${m.avgMs}ms</td>
+          <td>${(m.promptTokens || 0).toLocaleString()}</td><td>${(m.cachedTokens || 0).toLocaleString()}</td><td>${(m.completionTokens || 0).toLocaleString()}</td>
+          <td>${fmtBytes(m.outputBytes)}</td><td></td>
+        </tr>
+        <tr class="sm-keys hidden" data-p="${esc(p.name)}" data-m="${esc(m.id)}"><td colspan="11"><table class="sub-table">
+          <thead><tr><th>Key</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th><th>最后活跃</th></tr></thead>
+          <tbody>${keyRows || '<tr><td colspan="11" class="empty">暂无 key 数据</td></tr>'}</tbody>
+        </table></td></tr>`;
+    }).join('');
+    return `<tr class="sp-row" data-p="${esc(p.name)}">
+        <td>${_arrow(0)} <b>${esc(p.name)}</b></td><td>${p.requests}</td><td>${p.ok}</td><td>${p.errors}</td>
+        <td>${_rate(p.requests, p.ok)}</td><td>${p.retries}</td><td>${p.avgMs}ms</td>
+        <td>${(p.promptTokens || 0).toLocaleString()}</td><td>${(p.cachedTokens || 0).toLocaleString()}</td><td>${(p.completionTokens || 0).toLocaleString()}</td>
+        <td>${fmtBytes(p.outputBytes)}</td>
+      </tr>
+      <tr class="sp-models hidden" data-p="${esc(p.name)}"><td colspan="11"><table class="sub-table">
+        <thead><tr><th>Model</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th><th></th></tr></thead>
+        <tbody>${modelRows || '<tr><td colspan="11" class="empty">暂无 model 数据</td></tr>'}</tbody>
+      </table></td></tr>`;
+  }).join('');
+  $('#provider-table tbody').innerHTML = rows || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
 }
+
+/* 层级展开/收起(手风琴) */
+$('#provider-table tbody').addEventListener('click', (e) => {
+  const sp = e.target.closest('.sp-row');
+  if (sp) {
+    const sub = document.querySelector(`.sp-models[data-p="${CSS.escape(sp.dataset.p)}"]`);
+    const opening = sub && sub.classList.contains('hidden');
+    document.querySelectorAll('#provider-table .sp-models, #provider-table .sm-keys').forEach((x) => x.classList.add('hidden'));
+    document.querySelectorAll('#provider-table .sp-row, #provider-table .sm-row').forEach((x) => { x.classList.remove('open'); const arr = x.querySelector('.arr'); if (arr) arr.textContent = '▶'; });
+    if (opening) { sub.classList.remove('hidden'); sp.classList.add('open'); const arr = sp.querySelector('.arr'); if (arr) arr.textContent = '▼'; }
+    return;
+  }
+  const sm = e.target.closest('.sm-row');
+  if (sm) {
+    const sub = document.querySelector(`.sm-keys[data-p="${CSS.escape(sm.dataset.p)}"][data-m="${CSS.escape(sm.dataset.m)}"]`);
+    const opening = sub && sub.classList.contains('hidden');
+    document.querySelectorAll('#provider-table .sm-keys').forEach((x) => x.classList.add('hidden'));
+    document.querySelectorAll('#provider-table .sm-row').forEach((x) => { x.classList.remove('open'); const arr = x.querySelector('.arr'); if (arr) arr.textContent = '▶'; });
+    if (opening) { sub.classList.remove('hidden'); sm.classList.add('open'); const arr = sm.querySelector('.arr'); if (arr) arr.textContent = '▼'; }
+  }
+});
 
 function renderEvents(events) {
   $('#event-list').innerHTML = events.map((e) => {
@@ -374,19 +427,11 @@ async function loadStats() {
     renderKpis(d.summary);
     renderTrend(d.trends.hours);
     renderErrors(d.summary.errorTypes);
-    renderProviders(d.byProvider);
+    renderStatsTree(d.byProvider, d.byKey);
     renderEvents(d.recentEvents);
-    $('#stats-table tbody').innerHTML = d.byKey.map((s) => `
-      <tr>
-        <td>${esc(s.provider)}</td><td>${esc(s.model)}</td><td class="mono">${esc(s.key)}</td>
-        <td>${s.requests}</td><td>${s.ok}</td><td>${s.errors}</td><td>${s.retries}</td>
-        <td>${(s.promptTokens || 0).toLocaleString()}</td><td>${(s.cachedTokens || 0).toLocaleString()}</td><td>${(s.completionTokens || 0).toLocaleString()}</td>
-        <td>${fmtBytes(s.outputBytes)}</td><td>${s.avgMs}ms</td>
-        <td>${s.lastSeen ? new Date(s.lastSeen).toLocaleTimeString() : '-'}</td>
-      </tr>`).join('') || '<tr><td colspan="13" class="empty">暂无数据</td></tr>';
   } catch (e) {
     if (maybeNeedToken(e)) return;
-    $('#stats-table tbody').innerHTML = `<tr><td colspan="13" class="empty err">${esc(e.message)}</td></tr>`;
+    $('#provider-table tbody').innerHTML = `<tr><td colspan="11" class="empty err">${esc(e.message)}</td></tr>`;
   }
 }
 $('#btn-refresh-stats').addEventListener('click', loadStats);
