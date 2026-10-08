@@ -13,7 +13,7 @@
  *  - 每 model 的 key 池: 限流/失败才切换下一个 key(advanceKey 仅失败推进)
  *
  * 状态(state) 按 provider 持久(内存),跨请求共享:
- *   { degraded: Map<key, {modelId, since, success}>, cursor: Map<modelId, int> }
+ *   { degraded: Map<key, {modelId, since, success}>, cursor: Map<key, int>(失败次数,参与排序) }
  */
 'use strict';
 
@@ -87,8 +87,9 @@ function plan(p, st, requestedId) {
   const main = mainModel(p);
   const req = requestedId ? modelOf(p, requestedId) : null;
 
-  // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理)
-  const keys = allKeys(p);
+  // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理);
+  //    key 顺序按失败游标升序(游标=失败次数,失败多的排后 → 不每请求白试失效 key)
+  const keys = allKeys(p).sort((a, b) => (st.cursor.get(a) || 0) - (st.cursor.get(b) || 0));
   const chainOf = (key) => {
     const d = st.degraded.get(key);
     const start = d ? (modelOf(p, d.modelId) || main) : (req || main);
@@ -119,10 +120,10 @@ function plan(p, st, requestedId) {
   return out;
 }
 
-/** 推进某 model 的 key 轮询游标(仅失败时推进 → 同一 key 持续使用,遇到限流才切下一个) */
-function advanceKey(st, modelId) {
-  const c = st.cursor.get(modelId) || 0;
-  st.cursor.set(modelId, c + 1);
+/** 失败时推进该 key 的游标(失败次数+1) → 候选排序时排后,同一 key 持续使用到限流 */
+function advanceKey(st, key) {
+  const c = st.cursor.get(key) || 0;
+  st.cursor.set(key, c + 1);
 }
 
 /** 结果回报(降级期间某 key 的 2xx 成功计数: 达到 usageLimit 时到期回主) */
