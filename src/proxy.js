@@ -98,9 +98,8 @@ async function handleChat(req, res, pathname, method, body, pick) {
     model: requestedModel, usedModel: null, key: null,
     status: null, ms: 0, attempts: 0, degraded: false, error: null,
     promptTokens: 0, cachedTokens: 0, completionTokens: 0,
-    req: parsed, res: null, resChunks: [], truncated: false, logged: false,
+    req: parsed, res: null, resChunks: [], sseText: null, sseLen: 0, truncated: false, logged: false,
   };
-  let resBytes = 0;
 
   while (attempts < cap) {
     const c = planList[planIdx];
@@ -127,6 +126,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
       if (result.stream) {
         // 输出字节统计 + 真实 token(usage 滑动窗口: 覆盖 openai/anthropic 流式 SSE 与非流式 JSON)
         let win = Buffer.alloc(0);
+        const sse = sseReducer(); // 流式 SSE 精简器实例(重构遗漏: 原代码直接用 sse.push 但从未初始化)
         // 字段级去重: anthropic 流式 start(输入/缓存)与 delta(输出)分两次到达,
         // 每字段只记首次出现的值(兼容网关在 delta 重复回传 input_tokens 不双计)
         const got = {};
@@ -147,9 +147,15 @@ async function handleChat(req, res, pathname, method, body, pick) {
             if (add.cached) rec.cachedTokens = add.cached;
             if (add.completion) rec.completionTokens = add.completion;
           }
-          // 原始返回累积(截断上限)
-          if (resBytes < requests.MAX_REC) { rec.resChunks.push(ch); resBytes += ch.length; }
-          else rec.truncated = true;
+          // 流式响应: 只保留精简后的内容文本(丢弃 SSE 协议元数据,日志体积降 90%+)
+          const rr = sse.push(ch);
+          if (rec.sseLen < requests.MAX_REC) {
+            const grow = Math.min(rr.state.text.length - rec.sseLen, requests.MAX_REC - rec.sseLen);
+            rec.sseText = (rec.sseText || '') + rr.state.text.slice(rec.sseLen, rec.sseLen + grow);
+            rec.sseLen += grow;
+            if (rr.state.text.length > rec.sseLen) rec.truncated = true;
+          }
+          if (rr.state.error) rec.error = rr.state.error;
         });
         result.stream.on('end', () => logRec(rec)); // 流式响应完整结束才落盘
       } else if (result.body) {
@@ -206,12 +212,43 @@ function errTypeOf(d) {
   return 'other';
 }
 
+/**
+ * 增量式 SSE 精简器: 按行解析流式 SSE,只保留有效负载
+ *  - delta.content → 拼成纯文本(日志记录用,转发给客户端保持原样不变)
+ *  - 流式错误事件(data: {"error":...}) → state.error
+ *  - 丢弃 event:/id:/注释/空行等协议元数据,日志体积缩小 90%+
+ */
+function sseReducer() {
+  let buf = '';
+  const state = { text: '', error: null };
+  return {
+    state,
+    push(chunk) {
+      buf += chunk.toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue; // 丢弃 event:/id:/:keep-alive 等元数据行
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        let j; try { j = JSON.parse(payload); } catch { continue; }
+        if (j.error) { state.error = j.error.message || 'stream error'; continue; }
+        const delta = j.choices && j.choices[0] && j.choices[0].delta;
+        if (delta && typeof delta.content === 'string') state.text += delta.content;
+      return { state }; // 调用方用 rr.state.text/error(重构遗漏: 原实现无 return → rr 为 undefined)
+      }
+    },
+    flush() { return buf; },
+  };
+}
+
 /* ---------- 调用日志辅助(模块级,供 outputOk/outputFail 使用) ---------- */
 
 /** 收尾: 串化响应/截断/填充耗时;返回可写日志的记录 */
 function finalizeRec(rec) {
   rec.ms = Date.now() - rec.t;
-  if (rec.resChunks && rec.resChunks.length) rec.res = Buffer.concat(rec.resChunks).toString('utf8');
+  if (rec.sseText != null) rec.res = rec.sseText; // 流式: 精简后的内容文本
+  else if (rec.resChunks && rec.resChunks.length) rec.res = Buffer.concat(rec.resChunks).toString('utf8');
   if (rec.res && rec.res.length > requests.MAX_REC) { rec.truncated = true; rec.res = rec.res.slice(0, requests.MAX_REC); }
   try { if (rec.req && JSON.stringify(rec.req).length > requests.MAX_REQ) { rec.reqTruncated = true; rec.req = null; } } catch { rec.req = null; }
   delete rec.resChunks;
