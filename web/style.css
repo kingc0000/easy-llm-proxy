@@ -239,12 +239,20 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 .weak-banner b { color: #b45309; }
 
 /* ---------- 调用记录 ---------- */
-.req-filters { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+.req-head { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1rem; }
+.req-title { display: flex; align-items: baseline; gap: .65rem; flex-wrap: wrap; }
+.req-title h2 { font-size: 1.15rem; font-weight: 700; margin: 0; }
+.req-desc { font-size: .78rem; color: var(--muted); }
+.req-filters { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 .req-filters select, .req-filters input {
   background: var(--panel3); border: 1px solid var(--line); border-radius: 8px;
-  color: var(--fg); padding: .38rem .55rem; font-size: .84rem;
+  color: var(--fg); padding: .42rem .62rem; font-size: .84rem; transition: border-color .15s, background .15s;
 }
-.req-filters select:focus, .req-filters input:focus { background: #fff; }
+.req-filters select { min-width: 132px; }
+.req-filters #req-model { width: 130px; }
+.req-filters #req-status { width: 80px; }
+.req-filters #req-q { flex: 1; min-width: 160px; }
+.req-filters select:focus, .req-filters input:focus { background: #fff; border-color: var(--accent); }
 .req-row {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: .6rem .9rem; margin-bottom: .55rem; font-size: .84rem; box-shadow: var(--shadow-sm);
