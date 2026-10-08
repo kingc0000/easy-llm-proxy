@@ -53,36 +53,74 @@ function dates() {
 }
 
 /** 查询某天日志: {total, rows, date};rows 按时间倒序,含 req/res 全量 */
-// 按(文件, mtime)缓存原始文本: 省去每次读大文件;文件追加(mtime 变化)时自动重读
-let _textCache = { file: null, mtime: -1, value: '' };
-function readText(file) {
-  let st = null;
-  try { st = fs.statSync(file); } catch { return ''; }
-  if (_textCache.file === file && _textCache.mtime === st.mtimeMs) return _textCache.value;
-  let txt = '';
-  try { txt = fs.readFileSync(file, 'utf8'); } catch {}
-  _textCache = { file, mtime: st.mtimeMs, value: txt };
-  return txt;
+// 流式读取(readline 逐行),不把整文件读进内存——修复 288MB jsonl 导致 Node OOM 崩溃(1.7G 内存机器)
+const readline = require('readline');
+const { createReadStream } = fs;
+
+/** 第一次遍历: 统计命中数(用于 total),避免把全部行留在内存 */
+function countMatching(file, match, snap) {
+  return new Promise((resolve) => {
+    let n = 0;
+    const rl = readline.createInterface({ input: createReadStream(file, { end: snap }), crlfDelay: Infinity });
+    rl.on('line', (l) => { if (!l.trim()) return; let r; try { r = JSON.parse(l); } catch { return; } if (match(r)) n++; });
+    rl.on('close', () => resolve(n));
+    rl.on('error', () => resolve(0));
+  });
 }
 
-function list(date, opts = {}) {
+/** 第二次遍历: 收集 offset..offset+size 命中行(内存只保留页内记录) */
+// 文件按时间正序追加;要"最新的 offset..offset+size 条命中" → 跳过文件头部旧命中 skipHead 条,
+// 收集尾部窗口 want 条(内存 O(want)),再按 t 倒序输出
+function collectPage(file, match, skipHead, want, snap) {
+  return new Promise((resolve, reject) => {
+    const out = [];
+    let skip = skipHead;
+    const rl = readline.createInterface({ input: createReadStream(file, { end: snap }), crlfDelay: Infinity });
+    rl.on('line', (l) => {
+      if (!l.trim()) return;
+      let r; try { r = JSON.parse(l); } catch { return; }
+      if (!match(r)) return;
+      if (skip > 0) { skip--; return; }
+      if (out.length < want) out.push(r);
+    });
+    rl.on('close', () => resolve({ out, seen: -1 }));
+    rl.on('error', (e) => reject(e));
+  });
+}
+
+async function list(date, opts = {}) {
   const file = path.join(DIR, String(date || dayKey(new Date())) + '.jsonl');
-  let rows = [];
-  const text = readText(file);
-  if (text) {
-    const lines = text.split('\n').filter(Boolean);
-    rows = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  }
-  if (opts.model) rows = rows.filter((r) => (r.model || '').includes(opts.model) || (r.usedModel || '').includes(opts.model));
-  if (opts.status) rows = rows.filter((r) => String(r.status) === String(opts.status));
-  if (opts.q) rows = rows.filter((r) => JSON.stringify(r.req || {}).toLowerCase().includes(opts.q.toLowerCase()));
-  rows.sort((a, b) => (b.t || 0) - (a.t || 0)); // 最新在前
-  const total = rows.length;
-  const from = Math.max(0, parseInt(opts.offset || '0', 10));
+  const match = (r) => {
+    if (opts.model && !((r.model || '').includes(opts.model) || (r.usedModel || '').includes(opts.model))) return false;
+    if (opts.status && String(r.status) !== String(opts.status)) return false;
+    if (opts.q && !JSON.stringify(r.req || {}).toLowerCase().includes(opts.q.toLowerCase())) return false;
+    return true;
+  };
+  const offset = Math.max(0, parseInt(opts.offset || '0', 10));
   const size = Math.min(200, parseInt(opts.limit || '50', 10));
-  const resLimit = parseInt(opts.resLimit || (32 * 1024).toString(), 10);  // API 返回的响应原文上限(磁盘文件保留完整)
-  const reqLimit = parseInt(opts.reqLimit || (16 * 1024).toString(), 10);    // 请求体上限(防止列表响应过大导致前端卡死)
-  const out = rows.slice(from, from + size).map((r) => {
+  const resLimit = parseInt(opts.resLimit || (32 * 1024).toString(), 10); // API 返回的响应原文上限(磁盘文件保留完整)
+  const reqLimit = parseInt(opts.reqLimit || (16 * 1024).toString(), 10); // 请求体上限(防止列表响应过大导致前端卡死)
+
+  let st;
+  try { st = fs.statSync(file); } catch { st = null; }
+  if (!st || !st.size || size <= 0) {
+    return { total: 0, date: String(date || dayKey(new Date())), rows: [] };
+  }
+  const snap = st.size; // 快照截止点: 两遍扫描都扫到此为止,文件追加不会让 total 与窗口错位
+
+  // 第一遍: 只统计命中总数(内存 O(1))
+  const total = await countMatching(file, match, snap);
+  // 要返回的条数(offset 之后不足 size 则有多少返多少)
+  const want = Math.min(size, Math.max(0, total - offset));
+  if (want <= 0) {
+    return { total, date: String(date || dayKey(new Date())), rows: [] };
+  }
+  // 第二遍: 跳过文件头部旧命中,收集"最新 offset 起的 want 条"(内存 O(want))
+  const skipHead = total - offset - want;
+  const { out } = await collectPage(file, match, skipHead, want, snap);
+  out.sort((a, b) => (b.t || 0) - (a.t || 0)); // 行内按时间倒序(最新在前)
+
+  const rows = out.map((r) => {
     const o = { ...r };
     if (o.res && typeof o.res === 'string' && o.res.length > resLimit) {
       o.res = o.res.slice(0, resLimit); o.resClipped = true;
@@ -93,7 +131,7 @@ function list(date, opts = {}) {
     }
     return o;
   });
-  return { total, date: String(date || dayKey(new Date())), rows: out };
+  return { total, date: String(date || dayKey(new Date())), rows };
 }
 
 module.exports = { log, cleanup, dates, list, DIR, KEEP_DAYS, MAX_REC, MAX_REQ };

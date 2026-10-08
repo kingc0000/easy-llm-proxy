@@ -89,7 +89,12 @@ function usageOf(body, apiType) {
     if (!j || !j.usage) return null;
     const u = j.usage;
     if (apiType === 'anthropic') {
-      return { prompt: u.input_tokens || 0, cached: u.cache_read_input_tokens || 0, completion: u.output_tokens || 0 };
+      // Anthropic 的 input_tokens 不含缓存(cache_read/cache_creation 另计) → 补齐成"总输入(含缓存)"
+      return {
+        prompt: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+        cached: u.cache_read_input_tokens || 0,
+        completion: u.output_tokens || 0,
+      };
     }
     return {
       prompt: u.prompt_tokens || 0,
@@ -139,8 +144,9 @@ function normUsage(u) {
   if (!u) return null;
   if ('input_tokens' in u || 'output_tokens' in u || 'cache_read_input_tokens' in u || 'cache_creation_input_tokens' in u) {
     return {
-      prompt: u.input_tokens || 0,
-      cached: (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+      // Anthropic: input_tokens 不含缓存 → 总输入 = input + cache_read + cache_creation
+      prompt: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+      cached: u.cache_read_input_tokens || 0,
       completion: u.output_tokens || 0,
     };
   }

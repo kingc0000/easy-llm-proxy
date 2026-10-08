@@ -117,7 +117,7 @@ input:focus, select:focus, textarea:focus {
 h3 { margin: 1.3rem 0 .7rem; font-size: 1.02rem; }
 h3 small { color: var(--muted); font-weight: 400; }
 .model-row {
-  display: grid; grid-template-columns: 1.4fr .5fr .6fr .6fr 1.2fr auto; gap: .5rem; align-items: center;
+  display: grid; grid-template-columns: 1.4fr .5fr .6fr .5fr .7fr 1fr auto; gap: .5rem; align-items: center;
   background: var(--panel3); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .7rem; margin-bottom: .55rem;
 }
 .m-keys-note { font-size: .74rem; color: var(--muted); background: var(--panel2); border-radius: 6px; padding: .35rem .5rem; text-align: center; }

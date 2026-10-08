@@ -109,7 +109,7 @@ async function loadDashboard() {
           <div class="mono">${esc(p.baseURL)}</div>
           <div class="models">
             ${p.models.map((m) => `
-              <span class="model-chip" title="${esc(m.id)} · 权重 ${m.weight} · 共享 provider 级 key 池">
+              <span class="model-chip" title="${esc(m.id)} · 权重 ${m.weight} · 冷却 ${m.cooldown != null ? m.cooldown + 's' : '默认60s'} · 共享 provider 级 key 池">
                 ${esc(m.id)} <em>w${m.weight}</em> <i>openai</i>
               </span>`).join('')}
           </div>
@@ -153,6 +153,7 @@ function modelRow(m, i) {
     <input class="m-weight" type="number" min="1" max="100" value="${m.weight || 100}" title="权重 1-100,越大越优先">
     <input class="m-usage" type="number" min="0" value="${m.usageLimit ?? ''}" placeholder="成功次数" title="降级后成功 N 次切回主(0=不限)">
     <input class="m-seconds" type="number" min="0" value="${m.useSeconds ?? ''}" placeholder="秒数" title="降级后 N 秒切回主(0=不限)">
+    <input class="m-cooldown" type="number" min="0" value="${m.cooldown ?? ''}" placeholder="冷却s" title="该 model 全部 key 失败后的冷却秒数;留空=全局默认 60s">
     <span class="m-keys-note" title="key 在 provider 级统一管理,全部 model 共享">shared keys</span>
     <button type="button" class="btn small danger" onclick="delModel(this)">✕</button>
   </div>`;
@@ -245,6 +246,7 @@ function collectProvider() {
       weight: weight >= 1 && weight <= 100 ? weight : 100,
       usageLimit: numOrNull(r.querySelector('.m-usage').value),
       useSeconds: numOrNull(r.querySelector('.m-seconds').value),
+      cooldown: numOrNull(r.querySelector('.m-cooldown').value),
     };
   }).filter(Boolean);
   if (!models.length) throw new Error('至少需要一个有效的 model(id 必填)');
@@ -289,7 +291,7 @@ $('#editor-form').addEventListener('submit', async (e) => {
 $('#btn-add-key').addEventListener('click', addKeyRow);
 $('#btn-add-model').addEventListener('click', () => {
   const div = document.createElement('div');
-  div.innerHTML = modelRow({ id: 'new-model', weight: 90, usageLimit: null, useSeconds: null, keys: [] }, $$('#models .model-row').length).trim();
+  div.innerHTML = modelRow({ id: 'new-model', weight: 90, usageLimit: null, useSeconds: null, cooldown: null, keys: [] }, $$('#models .model-row').length).trim();
   $('#models').appendChild(div.firstChild);
 });
 
@@ -352,7 +354,7 @@ function fmtHour(h) { const d = new Date(String(h).slice(0, 13) + ':00:00Z'); re
 function renderKpis(s) {
   const err = s.errorTypes || {};
   const kpi = (label, val, sub = '') => `<div class="kpi"><div class="kpi-v">${val}</div><div class="kpi-l">${label}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
-  const inTok = (s.promptTokens || 0) + (s.cachedTokens || 0);
+  const inTok = s.promptTokens || 0; // promptTokens=总输入token(已含缓存命中)
   const cacheRate = inTok > 0 ? Math.round((s.cachedTokens || 0) / inTok * 1000) / 10 : 0;
   $('#stats-summary').innerHTML =
     kpi('总请求', s.requests) +
@@ -422,7 +424,7 @@ function renderErrors(err = {}) {
 }
 
 const _rate = (req, ok) => (req ? Math.round(ok / req * 1000) / 10 + '%' : '-');
-const _cacheRate = (pt, ct) => ((pt || 0) + (ct || 0)) ? Math.round((ct || 0) / ((pt || 0) + (ct || 0)) * 1000) / 10 + '%' : '-';
+const _cacheRate = (pt, ct) => (pt || 0) > 0 ? Math.round((ct || 0) / (pt || 0) * 1000) / 10 + '%' : '-'; // pt=总输入(含缓存)
 const _arrow = (open) => open ? '<span class="arr">▼</span>' : '<span class="arr">▶</span>';
 
 /* 统计页: Provider 主表 → Models 子表 → Keys 子表(三级层级) */

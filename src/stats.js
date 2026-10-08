@@ -234,7 +234,7 @@ function summary() {
   };
 }
 
-setInterval(save, SAVE_INTERVAL_MS);
+setInterval(save, SAVE_INTERVAL_MS).unref(); // 不阻塞进程退出
 process.on('SIGTERM', () => { save(); process.exit(0); });
 process.on('SIGINT', () => { save(); process.exit(0); });
 
