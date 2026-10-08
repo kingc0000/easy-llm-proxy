@@ -589,13 +589,20 @@ function showLogin(msgText) {
   $('#login-msg').textContent = msgText || '';
   if (msgText) $('#login-msg').className = 'msg err';
 }
-function showMain(username) {
-  show('dashboard');
+/* 登录后显示顶部导航的用户信息/账号/退出(登录提交与刷新直进共用) */
+function showHeaderUI(username) {
   $('#app-header').classList.remove('hidden');
-  $('#view-login').classList.add('hidden');
   $('#user-info').classList.remove('hidden');
+  $('#user-info').textContent = '👤 ' + username;
   $('#btn-account').classList.remove('hidden');
   $('#btn-logout').classList.remove('hidden');
+}
+
+function showMain(username) {
+  localStorage.setItem('username', username);
+  show('dashboard');
+  $('#view-login').classList.add('hidden');
+  showHeaderUI(username);
   $('#user-info').textContent = '👤 ' + username;
   show('dashboard');
   loadDashboard();
@@ -665,5 +672,10 @@ function maybeNeedToken(e) {
 
 /* ---------- 启动 ---------- */
 loadHealth();
-if (localStorage.getItem('token')) { show('dashboard'); loadDashboard(); } else { showLogin(); }
+if (localStorage.getItem('token')) {
+  show('dashboard');
+  const who = localStorage.getItem('username') || '';
+  if (who) showHeaderUI(who);  // 刷新直进也恢复右上角(账号/退出)
+  loadDashboard();
+} else { showLogin(); }
 setInterval(loadHealth, 15000);
