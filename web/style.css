@@ -239,20 +239,42 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 .weak-banner b { color: #b45309; }
 
 /* ---------- 调用记录 ---------- */
-.req-head { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1rem; }
-.req-title { display: flex; align-items: baseline; gap: .65rem; flex-wrap: wrap; }
-.req-title h2 { font-size: 1.15rem; font-weight: 700; margin: 0; }
-.req-desc { font-size: .78rem; color: var(--muted); }
-.req-filters { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
-.req-filters select, .req-filters input {
-  background: var(--panel3); border: 1px solid var(--line); border-radius: 8px;
-  color: var(--fg); padding: .42rem .62rem; font-size: .84rem; transition: border-color .15s, background .15s;
+.req-head { display: flex; flex-direction: column; gap: .7rem; margin-bottom: 1.2rem; }
+.req-title { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+.req-title h2 {
+  font-size: 1.22rem; font-weight: 800; margin: 0; letter-spacing: -.015em;
+  display: inline-flex; align-items: center; gap: .55rem;
 }
-.req-filters select { min-width: 132px; }
-.req-filters #req-model { width: 130px; }
-.req-filters #req-status { width: 80px; }
-.req-filters #req-q { flex: 1; min-width: 160px; }
-.req-filters select:focus, .req-filters input:focus { background: #fff; border-color: var(--accent); }
+.req-title h2::before {
+  content: ''; width: 4px; height: 1.05em; border-radius: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent2));
+}
+.req-desc { font-size: .8rem; color: var(--muted); }
+.req-filters {
+  display: flex; gap: .55rem; align-items: center; flex-wrap: wrap;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+  padding: .65rem .75rem; box-shadow: var(--shadow-sm);
+}
+.req-filters select, .req-filters input {
+  height: 34px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--fg); padding: 0 .65rem; font-size: .84rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+.req-filters select {
+  padding-right: 1.9rem; min-width: 140px; appearance: none; cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237b8499' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right .6rem center;
+}
+.req-filters select:hover, .req-filters input:hover { border-color: #c9d2e1; }
+.req-filters select:focus, .req-filters input:focus {
+  outline: none; border-color: var(--accent); background-color: #fff;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .16);
+}
+.req-filters #req-model { width: 134px; }
+.req-filters #req-status { width: 84px; }
+.req-filters #req-q { flex: 1; min-width: 170px; }
+#btn-req-search { height: 34px; padding: 0 .95rem; border-radius: 8px; font-weight: 600; }
+#btn-req-refresh { height: 34px; width: 34px; padding: 0; border-radius: 8px; }
 .req-row {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: .6rem .9rem; margin-bottom: .55rem; font-size: .84rem; box-shadow: var(--shadow-sm);
