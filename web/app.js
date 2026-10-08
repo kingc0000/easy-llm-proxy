@@ -468,7 +468,9 @@ function renderEvents(events) {
     const t = new Date(e.time);
     const line = e.type === 'degrade'
       ? `🔀 <b>${esc(e.provider)}</b> ${esc(e.model)} → <b>${e.toModel ? esc(e.toModel) : '主 model(回切)'}</b> <span class="dim">${esc(e.reason || '')}</span>`
-      : `⚠️ <b>${esc(e.provider)}</b> ${esc(e.model || '')} ${esc(e.detail || '')}`;
+      : e.type === 'recover'
+        ? `↩️ <b>${esc(e.provider)}</b> ${esc(e.model)} <b>达限切回主</b> <span class="dim">key ${esc(e.key || '')} · ${esc(e.reason || '')}</span>`
+        : `⚠️ <b>${esc(e.provider)}</b> ${esc(e.model || '')} ${esc(e.detail || '')}`;
     return `<div class="evt"><span class="dim">${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}</span> ${line}</div>`;
   }).join('') || '<div class="empty" style="padding:.6rem">暂无事件</div>';
 }

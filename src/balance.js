@@ -1,17 +1,19 @@
 /**
- * balance.js — 加权轮询引擎（easy-llm-proxy 核心）
+ * balance.js — per-key 降级链引擎(easy-llm-proxy 核心)
  *
- * 规则（按需求）:
+ * 规则:
  *  - 每 provider 多个 model,每个 model 配置 weight(1-100,越大越优先) + keys(多 key)
- *  - 主 model(权重最高) 限流 → 换下一个 key;该 model 全部 key 都限流 → 降级到
- *    权重更低的 model(如 100 → 99 → 97,按权重降序以此类推)
- *  - 降级 model 在使用达到 成功次数(usageLimit) 或 时长(useSeconds) 任一限制后
- *    切回权重最高的主 model;次数 = 成功返回的次数(2xx),不是调用次数
- *  - 最低权重也限流 → 回到主 model 重试(循环,带总尝试上限防死循环)
- *  - 每 model 的 key 池内部 round-robin(记录游标,429/5xx 跳过)
+ *  - 第一权重(主 model): 全部 key 都限流 → 切到第二权重;第二权重也全部限流 → 更低权重…
+ *    (层聚合: 每个权重层内,所有 key 依序尝试;该层全部失败才降下一层)
+ *  - **per-key 降级状态**: 某层全部 key 失败 → 这些 key 各自记录降级(到下一权重 model);
+ *    其他 key 不受影响继续用主 model(单 key 限流不拖累全局)
+ *  - 降级 key 在降级 model 使用达到 成功次数(usageLimit) 或 时长(useSeconds) 任一限制后
+ *    **切回主 model 继续轮询**(到期清理);次数 = 成功返回的次数(2xx)
+ *  - 回主后若主仍全部限流 → 重新降级到下一权重;最低权重也全失败 → 清态回主(循环)
+ *  - 每 model 的 key 池: 限流/失败才切换下一个 key(advanceKey 仅失败推进)
  *
  * 状态(state) 按 provider 持久(内存),跨请求共享:
- *   { degraded: {modelId, since, success} | null, cursor: Map<modelId, int> }
+ *   { degraded: Map<key, {modelId, since, success}>, cursor: Map<modelId, int> }
  */
 'use strict';
 
@@ -27,16 +29,15 @@ function mainModel(p) {
 
 /** 初始状态 */
 function newState() {
-  return { degraded: null, cursor: new Map() };
+  return { degraded: new Map(), cursor: new Map() };
 }
 
 function modelOf(p, id) {
   return p.models.find((x) => x.id === id) || null;
 }
 
-/** 降级是否到期(成功次数或时长任一达标 → 切回主) */
-function degradedDue(p, st) {
-  const d = st.degraded;
+/** 某 key 降级是否到期(成功次数或时长任一达标 → 切回主) */
+function keyDegradedDue(p, d) {
   if (!d) return false;
   const m = modelOf(p, d.modelId);
   if (!m) return true;
@@ -60,93 +61,100 @@ function nextLower(p, modelId) {
   return null;
 }
 
+/** 全部 key(去重,保持配置顺序) */
+function allKeys(p) {
+  const s = new Set();
+  for (const m of p.models) for (const k of m.keys) s.add(k);
+  return [...s];
+}
+
 /**
  * 生成尝试计划(候选列表,顺序即尝试顺序)。
- *  - 降级中且未到期: 从降级 model 开始,再更低权重,最后主
- *  - 否则: 从请求 model(若在配置中)或主开始,再更低权重,最后主
- *  - 每个 model 的 keys 从游标开始 round-robin
+ *  1) 先清理到期的 per-key 降级态(次数/时长达标 → 切回主)
+ *  2) 每 key 一条链: 降级中从降级 model 起,否则从主(或请求 model)起;链内按权重降序(同权重兄弟)
+ *  3) 按权重层聚合: 最高权重层(所有 key 的主候选) → 下一权重层(所有 key 的链中该层候选) → …
+ *     → "第一权重(全 key)都限流才切第二权重";per-key 独立降级/恢复互不影响
+ *  4) 降级中的 key 不进主层(到期由步骤 1 恢复),避免每请求白试主
  */
 function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
-  if (st.degraded && degradedDue(p, st)) {
-    st.degraded = null; // 到期 → 切回主
+
+  // 1) 到期清理(次数/时长达标 → 切回主);调用方 diff 前后 Map 记 recover 事件
+  for (const [k, d] of [...st.degraded]) {
+    if (keyDegradedDue(p, d)) st.degraded.delete(k);
   }
 
-  let start;
-  if (st.degraded) {
-    start = modelOf(p, st.degraded.modelId) || mainModel(p);
-  } else {
-    const req = requestedId ? modelOf(p, requestedId) : null;
-    start = req || mainModel(p);
-  }
-
-  // 尝试序列: 从 start 权重开始, 逐层收集[同权重兄弟 → 严格更低权重层] + 主兜底
-  // (同权重 model 均参与尝试,避免同权重兄弟被整层跳过)
-  const seq = [];
-  const seen = new Set();
-  const add = (m) => { if (m && !seen.has(m.id)) { seen.add(m.id); seq.push(m); } };
-  let w = start.weight;
-  for (;;) {
-    const layer = sorted.filter((m) => m.weight === w); // 同权重层
-    // 层内: 起点(降级 model/请求 model)优先,其余按配置顺序
-    if (layer.some((m) => m.id === start.id)) {
-      add(start);
-      layer.filter((m) => m.id !== start.id).forEach(add);
-    } else {
-      layer.forEach(add);
-    }
-    const lower = sorted.find((m) => m.weight < w);     // 下一层更低权重
-    if (!lower) break;
-    w = lower.weight;
-  }
   const main = mainModel(p);
-  if (main) add(main); // 主兜底(若未包含)
+  const req = requestedId ? modelOf(p, requestedId) : null;
 
-  const out = [];
-  for (const m of seq) {
-    const c = st.cursor.get(m.id) || 0;
-    const ks = m.keys;
-    for (let i = 0; i < ks.length; i++) {
-      const key = ks[(c + i) % ks.length];
-      out.push({ modelId: m.id, key });
+  // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理)
+  const keys = allKeys(p);
+  const chainOf = (key) => {
+    const d = st.degraded.get(key);
+    const start = d ? (modelOf(p, d.modelId) || main) : (req || main);
+    const seq = [];
+    const seen = new Set();
+    const add = (m) => { if (m && !seen.has(m.id)) { seen.add(m.id); seq.push(m); } };
+    let w = start.weight;
+    for (;;) {
+      const layer = sorted.filter((m) => m.weight === w); // 同权重层
+      if (layer.some((m) => m.id === start.id)) { add(start); layer.filter((m) => m.id !== start.id).forEach(add); }
+      else layer.forEach(add);
+      const lower = sorted.find((m) => m.weight < w);     // 下一层更低权重
+      if (!lower) break;
+      w = lower.weight;
     }
-    // 游标不在此推进: 由 proxy 尝试后调用 advanceKey(成功/失败都用掉的 key)
+    return seq;
+  };
+
+  // 3) 按权重层聚合(层降序 × key 依序)
+  const weights = [...new Set(sorted.map((m) => m.weight))].sort((a, b) => b - a);
+  const out = [];
+  for (const w of weights) {
+    for (const key of keys) {
+      const mAtW = chainOf(key).find((m) => m.weight === w);
+      if (mAtW) out.push({ modelId: mAtW.id, key });
+    }
   }
   return out;
 }
 
-/** 推进某 model 的 key 轮询游标(proxy 每尝试一个 key 后调用一次) */
+/** 推进某 model 的 key 轮询游标(仅失败时推进 → 同一 key 持续使用,遇到限流才切下一个) */
 function advanceKey(st, modelId) {
   const c = st.cursor.get(modelId) || 0;
   st.cursor.set(modelId, c + 1);
 }
 
-/** 结果回报(成功计数: 仅降级期间的 2xx 计入,次数=成功返回次数) */
-function report(p, st, modelId, ok) {
-  if (ok && st.degraded && st.degraded.modelId === modelId) {
-    st.degraded.success++;
-  }
+/** 结果回报(降级期间某 key 的 2xx 成功计数: 达到 usageLimit 时到期回主) */
+function report(p, st, modelId, key, ok) {
+  if (!ok) return;
+  const d = st.degraded.get(key);
+  if (d && d.modelId === modelId) d.success++;
 }
 
 /**
- * 某 model 全部 key 失败时调用 → 更新降级状态,返回下一轮计划。
- *  - 有更低权重: 设为降级目标(记录起始时间/成功计数)
- *  - 已是最低: 清除降级(回主)
+ * 某权重层的全部 key 都尝试失败(proxy 判定) → per-key 设置/更新降级态到下一权重。
+ *  - 有更低权重: keys 全部降级到 nextLower(更深链式降级)
+ *  - 已是最低权重: 清除这些 keys 的降级态(回主,下次从主重试)
+ * 返回 { toModel } 供事件记录。
  */
-function degrade(p, st, failedModelId) {
+function degrade(p, st, failedModelId, keys) {
   const lower = nextLower(p, failedModelId);
-  if (lower) {
-    st.degraded = { modelId: lower.id, since: Date.now(), success: 0 };
-  } else {
-    st.degraded = null; // 回主
+  if (!lower) {
+    for (const k of keys) st.degraded.delete(k); // 回主
+    return { toModel: null };
   }
-  return plan(p, st, null);
+  for (const k of keys) st.degraded.set(k, { modelId: lower.id, since: Date.now(), success: 0 });
+  return { toModel: lower.id };
 }
 
-/** 总尝试上限(防死循环) */
+/** 总尝试上限(防死循环): 层聚合候选最长 = keys × models,留余量 */
 function maxAttempts(p) {
-  const uniqueKeys = new Set(p.models.flatMap((m) => m.keys)).size; // 共享池去重
-  return uniqueKeys * 2 + p.models.length;
+  const ks = allKeys(p).length;
+  return ks * p.models.length + ks;
 }
+
+/** 兼容旧调用: 某 key 降级是否到期 */
+function degradedDue(p, d) { return keyDegradedDue(p, d); }
 
 module.exports = { modelsSorted, mainModel, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey };

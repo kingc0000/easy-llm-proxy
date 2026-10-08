@@ -32,8 +32,8 @@ function load() {
       if (!v.model) v.model = '(legacy)';
       if (!v.totalMs) { v.totalMs = v.totalMs || 0; v.errorTypes = v.errorTypes || {}; }
     }
-    return { keys, trends: raw && raw.trends || {}, degrades: (raw && raw.degrades) || 0 };
-  } catch { return { keys: {}, trends: {}, degrades: 0 }; }
+    return { keys, trends: raw && raw.trends || {}, degrades: (raw && raw.degrades) || 0, events: raw && Array.isArray(raw.events) ? raw.events : [] };
+  } catch { return { keys: {}, trends: {}, degrades: 0, events: [] }; }
 }
 
 let STATE = load();
@@ -41,7 +41,7 @@ let EVENTS = []; // 内存环形
 
 /** 清空全部统计(管理 API 重置按钮) */
 function reset() {
-  STATE = { keys: {}, trends: {}, errorTypes: {}, degrades: 0, since: Date.now() };
+  STATE = { keys: {}, trends: {}, errorTypes: {}, degrades: 0, events: [], since: Date.now() };
   EVENTS = [];
   save();
 }
@@ -129,8 +129,11 @@ function markError(provider, model, key, type) {
 
 /** 事件日志(内存环形缓冲): {time, type, provider, model, key, detail} */
 function recordEvent(ev) {
-  EVENTS.push({ time: Date.now(), ...ev });
+  const full = { time: Date.now(), ...ev };
+  EVENTS.push(full);
   if (EVENTS.length > EVENT_KEEP) EVENTS.splice(0, EVENTS.length - EVENT_KEEP);
+  STATE.events.push(full);                         // 持久化事件(重启不丢,保留最近 EVENT_KEEP 条)
+  if (STATE.events.length > EVENT_KEEP) STATE.events.splice(0, STATE.events.length - EVENT_KEEP);
   if (ev.type === 'degrade') STATE.degrades = (STATE.degrades || 0) + 1; // 持久化累计(内存事件重启会丢)
 }
 
@@ -143,7 +146,7 @@ function save() {
     for (const [id, v] of Object.entries(STATE.keys)) {
       if (v.lastSeen && v.lastSeen < cutoff) delete STATE.keys[id];
     }
-    fs.writeFileSync(STATS_FILE, JSON.stringify({ keys: STATE.keys, trends: STATE.trends, degrades: STATE.degrades || 0 }));
+    fs.writeFileSync(STATS_FILE, JSON.stringify({ keys: STATE.keys, trends: STATE.trends, degrades: STATE.degrades || 0, events: STATE.events }));
   } catch { /* 统计失败不阻塞 */ }
 }
 
@@ -227,7 +230,7 @@ function summary() {
     byProvider: providers,
     byKey: snapshot(),
     trends: { hours, days: dayList },
-    recentEvents: [...EVENTS].reverse().slice(0, 50),
+    recentEvents: [...STATE.events].reverse().slice(0, 50),
   };
 }
 

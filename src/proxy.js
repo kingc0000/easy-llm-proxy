@@ -83,9 +83,18 @@ async function handleChat(req, res, pathname, method, body, pick) {
   const passThrough = !!requestedModel && !confModel;
   const st = stateOf(provider);
   const mainId = balance.mainModel(provider).id;
+  // 生成尝试计划;同时 diff per-key 降级态,到期自动清理的 key 记「降级恢复」事件
+  const rePlan = (rid) => {
+    const before = new Map(st.degraded);
+    const pl = balance.plan(provider, st, rid);
+    for (const [k, v] of before) {
+      if (!st.degraded.has(k)) stats.recordEvent({ type: 'recover', provider: provider.name, model: v.modelId, key: shortKey(k), reason: '达限/到期 切回主' });
+    }
+    return pl;
+  };
   let planList = confModel
-    ? balance.plan(provider, st, requestedModel)
-    : balance.plan(provider, st, null).filter((c) => c.modelId === mainId); // 只用主 model 的 key 池
+    ? rePlan(requestedModel)
+    : rePlan(null).filter((c) => c.modelId === mainId); // 只用主 model 的 key 池
   const cap = balance.maxAttempts(provider);
   let attempts = 0;
   let planIdx = 0;
@@ -163,7 +172,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
         }
         if (rec.res === null) { rec.res = result.body.toString('utf8'); logRec(rec); } // openai 非流式直接记录
       }
-      balance.report(provider, st, c.modelId, true);
+      balance.report(provider, st, c.modelId, c.key, true);
       return outputOk(res, provider, result, parsed && parsed.stream, parsed && parsed.model, rec);
     }
     if (d.kind === 'final') {
@@ -178,10 +187,11 @@ async function handleChat(req, res, pathname, method, body, pick) {
     const remainingOfModel = planList.slice(planIdx).filter((x) => x.modelId === c.modelId).length;
     if (remainingOfModel === 0) {
       if (passThrough) break; // 未配置的 model 只换 key,不降级(保持 v1 行为)
-      balance.degrade(provider, st, c.modelId);
-      stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: st.degraded ? st.degraded.modelId : null, reason: d.reason });
+      const modelKeys = [...new Set(planList.filter((x) => x.modelId === c.modelId).map((x) => x.key))];
+      const dg = balance.degrade(provider, st, c.modelId, modelKeys);
+      stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: dg.toModel, reason: d.reason });
       degradeCount++;
-      planList = balance.plan(provider, st, requestedModel);
+      planList = rePlan(requestedModel);
       planIdx = 0;
       if (degradeCount > provider.models.length + 2) break; // 兜底防无限降级
     }
