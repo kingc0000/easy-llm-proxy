@@ -1,6 +1,6 @@
 {
   "name": "easy-llm-proxy",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "通用 LLM Provider 多 Key 多 Model 加权轮询代理(OpenAI/Anthropic) + Web 管理面板",
   "main": "bin/start.js",
   "scripts": {
