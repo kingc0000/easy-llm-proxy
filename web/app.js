@@ -377,7 +377,7 @@ function renderTrend(hours) {
     const x = PAD + i * bw + bw * 0.15;
     const bh = (h.requests / maxReq) * (H - 34);
     const y = H - 20 - bh;
-    bars += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${bh || 1}" rx="3" fill="${h.requests ? '#3b82f6' : '#dce3ef'}"><title>${h.hour} 请求 ${h.requests} 成功率 ${h.successRate ?? '-'}%</title></rect>`;
+    bars += `<rect x="${x}" y="${y}" width="${bw * 0.7}" height="${bh || 1}" rx="3" fill="${h.requests ? '#3b82f6' : '#dce3ef'}" data-hour="${esc(h.hour)}" data-req="${h.requests}" data-rate="${h.successRate ?? ''}"></rect>`;
     const rateY = H - 20 - (h.successRate ?? 0) / 100 * (H - 34);
     line += `${i ? 'L' : 'M'}${x + bw * 0.35},${rateY} `;
   });
@@ -386,6 +386,30 @@ function renderTrend(hours) {
     `<line x1="${PAD}" y1="${H - 20}" x2="${W - PAD}" y2="${H - 20}" stroke="#dce3ef"/>` +
     (list.length <= 13 ? list.map((h, i) => `<text x="${PAD + i * bw + bw * 0.35}" y="${H - 6}" text-anchor="middle" fill="#94a3b8" font-size="9">${fmtHour(h.hour)}</text>`).join('') : '');
 }
+
+/* 趋势图悬浮提示: 显示该小时请求数与成功率 */
+(function () {
+  const wrap = document.querySelector('.trend-wrap');
+  if (!wrap) return;
+  const svg = document.getElementById('trend-chart');
+  const tip = document.getElementById('trend-tip');
+  if (!svg || !tip) return;
+  svg.addEventListener('mousemove', (e) => {
+    const t = e.target && e.target.closest ? e.target.closest('rect[data-hour]') : null;
+    if (!t) { tip.classList.add('hidden'); return; }
+    const hour = t.dataset.hour;
+    const rate = t.dataset.rate !== '' ? t.dataset.rate + '%' : '-';
+    tip.textContent = `${hour.slice(5, 10)} ${fmtHour(hour)} · 请求 ${Number(t.dataset.req).toLocaleString()} · 成功率 ${rate}`;
+    tip.classList.remove('hidden');
+    const r = svg.getBoundingClientRect();
+    let x = e.clientX - r.left + 12, y = e.clientY - r.top - 12;
+    if (x + tip.offsetWidth + 8 > r.width) x = e.clientX - r.left - tip.offsetWidth - 12;
+    if (y < 0) y = 0;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  });
+  svg.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+})();
 
 function renderErrors(err = {}) {
   const order = ['429', '5xx', 'net', 'model', 'timeout', 'other'];

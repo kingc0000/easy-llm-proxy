@@ -113,7 +113,10 @@
     <div class="charts">
       <div class="chart-card">
         <h3>请求趋势 (近 24 小时) <small>柱=请求数 线=成功率%</small></h3>
+        <div class="trend-wrap">
         <svg id="trend-chart" width="100%" height="150" viewBox="0 0 720 150" preserveAspectRatio="none"></svg>
+        <div id="trend-tip" class="trend-tip hidden"></div>
+      </div>
       </div>
       <div class="chart-card">
         <h3>错误类型分布</h3>
