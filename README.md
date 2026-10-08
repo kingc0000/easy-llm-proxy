@@ -19,7 +19,7 @@ Agent / 客户端 ──(OpenAI 兼容)──▶ easy-llm-proxy ──▶ OpenAI
 | 🔑 **多 Key 轮转 + 冷却** | 每 model 多个 key：失败即冷却（冷却粒度 **(model,key)**，因限流多为 model 级）+ **指针轮转**（冷却跳过、过期不抢队首）；可选 **平均轮询** 模式做严格分摊 |
 | 🌐 **协议归一化** | `openai`（默认）与 `anthropic`（原生 `/v1/messages` + `x-api-key`）provider 混用；Anthropic 自动做请求体/非流式/流式 SSE 双向转换，**客户端无感**，全程 OpenAI 兼容 |
 | 🔐 **登录认证** | Web 面板登录页（用户名/密码，scrypt 哈希存储、会话 Token、失败锁定），支持**修改用户名/密码**；管理 API 统一鉴权 |
-| 📊 **真实 Token 统计** | 请求 Token / 缓存命中 Token / 输出 Token（OpenAI 与 Anthropic 均真实解析，非字节估算）；请求/成功/重试/降级/耗时聚合 + 小时/日趋势 + 错误类型分布 |
+| 📊 **真实 Token 统计** | 请求 Token / 缓存命中 Token / 输出 Token（OpenAI 与 Anthropic 均真实解析，非字节估算）；**缓存率 = 缓存命中 / 总输入 Token**（两协议语义归一，可同比）；请求/成功/重试/降级/耗时聚合 + 小时/日趋势 + 错误类型分布 |
 | 📜 **调用日志** | 每条调用完整记录：**原始请求 + 原始返回（含流式 SSE 原文）+ 错误信息**，按天落盘、面板可查、自动清理 |
 | 💻 **Web 管理面板** | 浏览器可视化配置 Provider/Model/权重/Key、一键测试连接、查看统计与调用记录，免改配置文件 |
 | ⚡ **轻量** | 纯 Node 标准库（`http/https/crypto`），**零第三方依赖**，无 node_modules；空闲 RSS ≈ 50MB，CPU 0% |
@@ -95,6 +95,8 @@ model:     任意配置中的 model id(自动按权重调度/降级)
 }
 ```
 
+> 冷却秒数（`cooldown`）**也可以直接在 Web 面板的 Model 编辑行填写**，保存即生效，无需改配置文件。
+
 ### 轮询与降级语义
 
 **Key 轮转（默认 超限轮询）**
@@ -140,7 +142,7 @@ model:     任意配置中的 model id(自动按权重调度/降级)
 
 | 页面 | 功能 |
 | --- | --- |
-| **Providers** | 卡片化查看/编辑 Provider、Model、Key、权重；一键测试连接（未保存也能测）|
+| **Providers** | 卡片化查看/编辑 Provider、Model、Key、权重、**冷却秒数**；一键测试连接（未保存也能测）|
 | **统计** | 实时 KPI（请求/成功/失败/重试/降级/耗时/成功率）、三种真实 Token、24h 趋势图、错误类型分布、Provider/Key 明细、降级事件 |
 | **记录** | 调用日志：按日期/模型/状态码/内容关键词查询，点击展开 **原始请求 + 原始返回（流式含完整 SSE）+ 错误信息** |
 | **账号** | 右上角 ⚙ 修改用户名/密码（需旧密码，改后全部会话失效重新登录）|
@@ -173,13 +175,15 @@ server {
 ## 📂 项目结构
 
 ```
-bin/start.js         入口
-src/proxy.js         主服务(路由/处理链/鉴权)
+bin/start.js         入口(auth 初始化 + 启动 server)
+src/server.js        HTTP 层(路由分发 / 静态 Web / 健康检查 / 启动)
+src/api.js           管理 API(登录/账号/统计/日志/配置 CRUD/连接测试)
+src/proxy.js         主转发链(权重引擎尝试链 / 降级 / 日志 /v1/models)
 src/config.js        配置加载与校验(mtime 热加载)
 src/balance.js       加权轮询/降级/切回引擎
 src/adapters.js      上游请求/协议转换/usage 提取
 src/stats.js         统计聚合与持久化
-src/requests.js      调用日志(原始请求/返回/错误)
+src/requests.js      调用日志(原始请求/返回/错误; 大文件流式读取)
 src/auth.js          登录/会话/改密
 web/                 Web 面板(纯静态)
 test/                单元测试 + mock 上游
@@ -190,7 +194,7 @@ deploy-docker.sh     Docker 一键部署
 ## 🧪 测试
 
 ```bash
-npm test              # 权重轮询单元测试(11 例)
+npm test              # 权重轮询/冷却/降级单元测试(15 例)
 # 本地 mock 集成: node test/mock-upstream.js + mock-anthropic.js,再 curl 验证
 ```
 
