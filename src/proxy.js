@@ -189,7 +189,10 @@ async function handleChat(req, res, pathname, method, body, pick) {
       if (passThrough) break; // 未配置的 model 只换 key,不降级(保持 v1 行为)
       const modelKeys = [...new Set(planList.filter((x) => x.modelId === c.modelId).map((x) => x.key))];
       const dg = balance.degrade(provider, st, c.modelId, modelKeys);
-      stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: dg.toModel, reason: d.reason });
+      stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: dg.toModel, key: modelKeys.join(' '), reason: d.reason });
+      if (!dg.toModel && dg.cleared > 0) { // 最低权重也失败 → 兜底回主(也记恢复事件)
+        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '最低权重也失败 回主重试' });
+      }
       degradeCount++;
       planList = rePlan(requestedModel);
       planIdx = 0;

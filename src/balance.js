@@ -142,11 +142,13 @@ function report(p, st, modelId, key, ok) {
 function degrade(p, st, failedModelId, keys) {
   const lower = nextLower(p, failedModelId);
   if (!lower) {
-    for (const k of keys) st.degraded.delete(k); // 回主
-    return { toModel: null };
+    // 已是最低权重 → 清除这些 keys 的降级态(兜底回主,下次从主重试);cleared 供恢复事件
+    let cleared = 0;
+    for (const k of keys) { if (st.degraded.delete(k)) cleared++; }
+    return { toModel: null, cleared };
   }
   for (const k of keys) st.degraded.set(k, { modelId: lower.id, since: Date.now(), success: 0 });
-  return { toModel: lower.id };
+  return { toModel: lower.id, cleared: 0 };
 }
 
 /** 总尝试上限(防死循环): 层聚合候选最长 = keys × models,留余量 */
