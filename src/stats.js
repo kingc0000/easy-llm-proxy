@@ -32,8 +32,8 @@ function load() {
       if (!v.model) v.model = '(legacy)';
       if (!v.totalMs) { v.totalMs = v.totalMs || 0; v.errorTypes = v.errorTypes || {}; }
     }
-    return { keys, trends: raw && raw.trends || {} };
-  } catch { return { keys: {}, trends: {} }; }
+    return { keys, trends: raw && raw.trends || {}, degrades: (raw && raw.degrades) || 0 };
+  } catch { return { keys: {}, trends: {}, degrades: 0 }; }
 }
 
 let STATE = load();
@@ -41,7 +41,7 @@ let EVENTS = []; // 内存环形
 
 /** 清空全部统计(管理 API 重置按钮) */
 function reset() {
-  STATE = { keys: {}, trends: {}, errorTypes: {}, events: [], since: Date.now() };
+  STATE = { keys: {}, trends: {}, errorTypes: {}, degrades: 0, since: Date.now() };
   EVENTS = [];
   save();
 }
@@ -131,6 +131,7 @@ function markError(provider, model, key, type) {
 function recordEvent(ev) {
   EVENTS.push({ time: Date.now(), ...ev });
   if (EVENTS.length > EVENT_KEEP) EVENTS.splice(0, EVENTS.length - EVENT_KEEP);
+  if (ev.type === 'degrade') STATE.degrades = (STATE.degrades || 0) + 1; // 持久化累计(内存事件重启会丢)
 }
 
 const KEY_TTL_MS = 90 * 24 * 3600 * 1000; // 90 天不活跃清理(防 stats.json 无限增长)
@@ -142,7 +143,7 @@ function save() {
     for (const [id, v] of Object.entries(STATE.keys)) {
       if (v.lastSeen && v.lastSeen < cutoff) delete STATE.keys[id];
     }
-    fs.writeFileSync(STATS_FILE, JSON.stringify({ keys: STATE.keys, trends: STATE.trends }));
+    fs.writeFileSync(STATS_FILE, JSON.stringify({ keys: STATE.keys, trends: STATE.trends, degrades: STATE.degrades || 0 }));
   } catch { /* 统计失败不阻塞 */ }
 }
 
@@ -220,7 +221,7 @@ function summary() {
       successRate: agg.requests ? Math.round((agg.ok / agg.requests) * 1000) / 10 : null,
       avgMs: agg.requests ? Math.round(agg.totalMs / agg.requests) : 0,
       errorTypes: agg.errorTypes,
-      degrades: EVENTS.filter((e) => e.type === 'degrade').length,
+      degrades: STATE.degrades || 0,
       promptTokens: agg.promptTokens, cachedTokens: agg.cachedTokens, completionTokens: agg.completionTokens,
     },
     byProvider: providers,
