@@ -422,6 +422,7 @@ function renderErrors(err = {}) {
 }
 
 const _rate = (req, ok) => (req ? Math.round(ok / req * 1000) / 10 + '%' : '-');
+const _cacheRate = (pt, ct) => ((pt || 0) + (ct || 0)) ? Math.round((ct || 0) / ((pt || 0) + (ct || 0)) * 1000) / 10 + '%' : '-';
 const _arrow = (open) => open ? '<span class="arr">▼</span>' : '<span class="arr">▶</span>';
 
 /* 统计页: Provider 主表 → Models 子表 → Keys 子表(三级层级) */
@@ -438,32 +439,32 @@ function renderStatsTree(providers, byKey) {
       const keyRows = ks.map((k) => `<tr class="sk-row">
           <td class="mono">${esc(k.key)}</td><td>${k.requests}</td><td>${k.ok}</td><td>${k.failed}</td>
           <td>${_rate(k.requests, k.ok)}</td><td>${k.avgMs}ms</td>
-          <td>${(k.promptTokens || 0).toLocaleString()}</td><td>${(k.cachedTokens || 0).toLocaleString()}</td><td>${(k.completionTokens || 0).toLocaleString()}</td>
+          <td>${(k.promptTokens || 0).toLocaleString()}</td><td>${(k.cachedTokens || 0).toLocaleString()}</td><td>${_cacheRate(k.promptTokens, k.cachedTokens)}</td><td>${(k.completionTokens || 0).toLocaleString()}</td>
           <td>${fmtBytes(k.outputBytes)}</td><td>${k.lastSeen ? new Date(k.lastSeen).toLocaleTimeString() : '-'}</td>
         </tr>`).join('');
       return `<tr class="sm-row" data-p="${esc(p.name)}" data-m="${esc(m.id)}">
           <td>${_arrow(0)} <b>${esc(m.id)}</b></td><td>${m.requests}</td><td>${m.ok}</td><td>${m.failed}</td>
           <td>${_rate(m.requests, m.ok)}</td><td>${m.avgMs}ms</td>
-          <td>${(m.promptTokens || 0).toLocaleString()}</td><td>${(m.cachedTokens || 0).toLocaleString()}</td><td>${(m.completionTokens || 0).toLocaleString()}</td>
+          <td>${(m.promptTokens || 0).toLocaleString()}</td><td>${(m.cachedTokens || 0).toLocaleString()}</td><td>${_cacheRate(m.promptTokens, m.cachedTokens)}</td><td>${(m.completionTokens || 0).toLocaleString()}</td>
           <td>${fmtBytes(m.outputBytes)}</td><td></td>
         </tr>
-        <tr class="sm-keys hidden" data-p="${esc(p.name)}" data-m="${esc(m.id)}"><td colspan="11"><table class="sub-table">
-          <thead><tr><th>Key</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th><th>最后活跃</th></tr></thead>
-          <tbody>${keyRows || '<tr><td colspan="11" class="empty">暂无 key 数据</td></tr>'}</tbody>
+        <tr class="sm-keys hidden" data-p="${esc(p.name)}" data-m="${esc(m.id)}"><td colspan="12"><table class="sub-table">
+          <thead><tr><th>Key</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th title="缓存token/输入总token">缓存率</th><th>输出tok</th><th>输出(B)</th><th>最后活跃</th></tr></thead>
+          <tbody>${keyRows || '<tr><td colspan="12" class="empty">暂无 key 数据</td></tr>'}</tbody>
         </table></td></tr>`;
     }).join('');
     return `<tr class="sp-row" data-p="${esc(p.name)}">
         <td>${_arrow(0)} <b>${esc(p.name)}</b></td><td>${p.requests}</td><td>${p.ok}</td><td>${p.failed}</td>
         <td>${_rate(p.requests, p.ok)}</td><td>${p.retries}</td><td>${p.avgMs}ms</td>
-        <td>${(p.promptTokens || 0).toLocaleString()}</td><td>${(p.cachedTokens || 0).toLocaleString()}</td><td>${(p.completionTokens || 0).toLocaleString()}</td>
+        <td>${(p.promptTokens || 0).toLocaleString()}</td><td>${(p.cachedTokens || 0).toLocaleString()}</td><td>${_cacheRate(p.promptTokens, p.cachedTokens)}</td><td>${(p.completionTokens || 0).toLocaleString()}</td>
         <td>${fmtBytes(p.outputBytes)}</td>
       </tr>
-      <tr class="sp-models hidden" data-p="${esc(p.name)}"><td colspan="11"><table class="sub-table">
-        <thead><tr><th>Model</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th>输出tok</th><th>输出(B)</th><th></th></tr></thead>
-        <tbody>${modelRows || '<tr><td colspan="11" class="empty">暂无 model 数据</td></tr>'}</tbody>
+      <tr class="sp-models hidden" data-p="${esc(p.name)}"><td colspan="12"><table class="sub-table">
+        <thead><tr><th>Model</th><th>请求</th><th>成功</th><th>失败</th><th>成功率</th><th>平均耗时</th><th>请求tok</th><th>缓存tok</th><th title="缓存token/输入总token">缓存率</th><th>输出tok</th><th>输出(B)</th><th></th></tr></thead>
+        <tbody>${modelRows || '<tr><td colspan="12" class="empty">暂无 model 数据</td></tr>'}</tbody>
       </table></td></tr>`;
   }).join('');
-  $('#provider-table tbody').innerHTML = rows || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
+  $('#provider-table tbody').innerHTML = rows || '<tr><td colspan="12" class="empty">暂无数据</td></tr>';
 }
 
 /* 层级展开/收起(手风琴) */
@@ -509,7 +510,7 @@ async function loadStats() {
     renderEvents(d.recentEvents);
   } catch (e) {
     if (maybeNeedToken(e)) return;
-    $('#provider-table tbody').innerHTML = `<tr><td colspan="11" class="empty err">${esc(e.message)}</td></tr>`;
+    $('#provider-table tbody').innerHTML = `<tr><td colspan="12" class="empty err">${esc(e.message)}</td></tr>`;
   }
 }
 $('#btn-refresh-stats').addEventListener('click', loadStats);
