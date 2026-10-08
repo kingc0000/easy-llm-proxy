@@ -53,13 +53,26 @@ function dates() {
 }
 
 /** 查询某天日志: {total, rows, date};rows 按时间倒序,含 req/res 全量 */
+// 按(文件, mtime)缓存原始文本: 省去每次读大文件;文件追加(mtime 变化)时自动重读
+let _textCache = { file: null, mtime: -1, value: '' };
+function readText(file) {
+  let st = null;
+  try { st = fs.statSync(file); } catch { return ''; }
+  if (_textCache.file === file && _textCache.mtime === st.mtimeMs) return _textCache.value;
+  let txt = '';
+  try { txt = fs.readFileSync(file, 'utf8'); } catch {}
+  _textCache = { file, mtime: st.mtimeMs, value: txt };
+  return txt;
+}
+
 function list(date, opts = {}) {
   const file = path.join(DIR, String(date || dayKey(new Date())) + '.jsonl');
   let rows = [];
-  try {
-    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  const text = readText(file);
+  if (text) {
+    const lines = text.split('\n').filter(Boolean);
     rows = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  } catch { /* 无此日期文件 */ }
+  }
   if (opts.model) rows = rows.filter((r) => (r.model || '').includes(opts.model) || (r.usedModel || '').includes(opts.model));
   if (opts.status) rows = rows.filter((r) => String(r.status) === String(opts.status));
   if (opts.q) rows = rows.filter((r) => JSON.stringify(r.req || {}).toLowerCase().includes(opts.q.toLowerCase()));
@@ -67,12 +80,18 @@ function list(date, opts = {}) {
   const total = rows.length;
   const from = Math.max(0, parseInt(opts.offset || '0', 10));
   const size = Math.min(200, parseInt(opts.limit || '50', 10));
-  const resLimit = parseInt(opts.resLimit || (128 * 1024).toString(), 10); // API 返回的响应原文上限(磁盘文件保留完整)
+  const resLimit = parseInt(opts.resLimit || (32 * 1024).toString(), 10);  // API 返回的响应原文上限(磁盘文件保留完整)
+  const reqLimit = parseInt(opts.reqLimit || (16 * 1024).toString(), 10);    // 请求体上限(防止列表响应过大导致前端卡死)
   const out = rows.slice(from, from + size).map((r) => {
-    if (r.res && typeof r.res === 'string' && r.res.length > resLimit) {
-      return { ...r, res: r.res.slice(0, resLimit), resClipped: true };
+    const o = { ...r };
+    if (o.res && typeof o.res === 'string' && o.res.length > resLimit) {
+      o.res = o.res.slice(0, resLimit); o.resClipped = true;
     }
-    return r;
+    if (o.req && typeof o.req === 'object') {
+      const js = JSON.stringify(o.req);
+      if (js.length > reqLimit) { o.req = js.slice(0, reqLimit); o.reqTruncated = true; }
+    }
+    return o;
   });
   return { total, date: String(date || dayKey(new Date())), rows: out };
 }

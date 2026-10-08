@@ -5,10 +5,21 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 async function api(path, opts = {}) {
   const token = localStorage.getItem('token') || '';
-  const r = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': token, ...(opts.headers || {}) },
-    ...opts,
-  });
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), opts.timeout || 20000); // 20s 超时,避免无限 loading
+  let r;
+  try {
+    r = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': token, ...(opts.headers || {}) },
+      signal: ctl.signal,
+      ...opts,
+    });
+  } catch (e) {
+    clearTimeout(to);
+    if (e && e.name === 'AbortError') throw new Error('请求超时(20s),请重试');
+    throw e;
+  }
+  clearTimeout(to);
   if (!r.ok) {
     let msg = 'HTTP ' + r.status;
     try { msg = (await r.json()).error?.message || msg; } catch {}
@@ -455,18 +466,22 @@ async function loadRequestDates() {
 }
 function detailJson(o, truncated) {
   if (o == null) return truncated ? '(请求体超限未记录)' : '无';
+  if (typeof o === 'string') return o + (truncated ? '\n(超出上限未全记)' : '');
   try { return JSON.stringify(o, null, 2) + (truncated ? '\n(超出上限未全记)' : ''); } catch { return String(o); }
 }
 async function loadRequests() {
+  const listEl = $('#req-list');
+  if (listEl && listEl.innerHTML === '') listEl.innerHTML = `<div class="empty">加载中…</div>`;
   const date = $('#req-date').value || '';
   const model = $('#req-model').value.trim();
   const status = $('#req-status').value.trim();
   const q = $('#req-q').value.trim();
-  const query = new URLSearchParams({ date, model, status, q, limit: '50' }).toString();
+  const query = new URLSearchParams({ date, model, status, q, limit: '20' }).toString();
   try {
     const d = await api('/api/requests?' + query);
     const list = $('#req-list');
     if (!d.total) { list.innerHTML = `<div class="empty">${date ? date + ' ' : ''}暂无调用记录${(model || status || q) ? '(符合筛选)' : ''}</div>`; return; }
+    window.__reqRows = d.rows; // 供展开时惰性生成详情
     list.innerHTML = d.rows.map((r, i) => {
       const st = r.status;
       const cls = (st >= 200 && st < 300) ? 'ok' : 'err';
@@ -486,14 +501,27 @@ async function loadRequests() {
           ${errInfo}
         </div>
         <div class="req-detail hidden" id="reqd-${i}">
-          <div><h4>原始请求${r.reqTruncated ? '(截断)' : ''}</h4><pre>${esc(detailJson(r.req, r.reqTruncated))}</pre></div>
-          <div><h4>原始返回${r.truncated ? '(原始超出512KB截断)' : ''}${r.resClipped ? '(列表仅显示前128KB,磁盘完整)' : ''}${(!r.truncated && !r.resClipped && r.apiType === 'anthropic') ? '(上游原始)' : ''}</h4><pre>${esc(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res))}</pre></div>
+          <div><h4>原始请求${r.reqTruncated ? '(截断)' : ''}</h4><pre data-kind="req" data-i="${i}"></pre></div>
+          <div><h4>原始返回${r.truncated ? '(原始超出512KB截断)' : ''}${r.resClipped ? '(列表仅显示前128KB,磁盘完整)' : ''}${(!r.truncated && !r.resClipped && r.apiType === 'anthropic') ? '(上游原始)' : ''}</h4><pre data-kind="res" data-i="${i}"></pre></div>
         </div>
       </div>`;
     }).join('');
   } catch (e) { if (maybeNeedToken(e)) return; $('#req-list').innerHTML = `<div class="empty err">加载失败: ${esc(e.message)}</div>`; }
 }
-function toggleReqDetail(i, ev) { ev.stopPropagation(); const el = $('#reqd-' + i); if (el) el.classList.toggle('hidden'); }
+function toggleReqDetail(i, ev) {
+  ev.stopPropagation();
+  const el = $('#reqd-' + i);
+  if (!el) return;
+  const closing = !el.classList.contains('hidden');
+  el.classList.toggle('hidden');
+  if (closing) return; // 收起无需填充
+  const r = (window.__reqRows || [])[i];
+  if (!r) return;
+  el.querySelectorAll('pre').forEach((p) => {
+    if (p.dataset.kind === 'req') p.textContent = detailJson(r.req, r.reqTruncated);
+    else if (p.dataset.kind === 'res') p.textContent = detailJson(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res), r.truncated);
+  });
+}
 $('#btn-req-search').addEventListener('click', loadRequests);
 $('#btn-req-refresh').addEventListener('click', () => { loadRequestDates(); loadRequests(); });
 if ($('#req-date')) $('#req-date').addEventListener('change', loadRequests);
