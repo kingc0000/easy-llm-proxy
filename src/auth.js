@@ -39,7 +39,26 @@ function load() {
 }
 
 let CRED = load();
-const sessions = new Map(); // token -> expiry(ms)
+// 无状态会话 token: HMAC-SHA256(secret, 过期时间) 签名,不依赖内存;
+// secret 持久化到 auth-secret(600),服务重启后已签发 token 仍有效(不会掉登录);
+// 修改账号密码时轮换 secret → 全部历史 token 立即失效(保持原语义)
+const SECRET_FILE = process.env.SECRET_FILE || path.join(path.dirname(AUTH_FILE), 'auth-secret');
+let _secret = null;
+function getSecret() {
+  if (_secret) return _secret;
+  try { _secret = fs.readFileSync(SECRET_FILE, 'utf8').trim(); if (_secret) return _secret; } catch {}
+  _secret = crypto.randomBytes(32).toString('hex');
+  try { fs.writeFileSync(SECRET_FILE, _secret, { mode: 0o600 }); } catch {}
+  return _secret;
+}
+function bumpSecret() {
+  _secret = crypto.randomBytes(32).toString('hex');
+  try { fs.writeFileSync(SECRET_FILE, _secret, { mode: 0o600 }); } catch {}
+}
+function makeToken(expMs) {
+  const expHex = expMs.toString(16);
+  return expHex + '.' + crypto.createHmac('sha256', getSecret()).update(expHex).digest('hex');
+}
 let failCount = 0;
 let lockUntil = 0;
 
@@ -78,19 +97,22 @@ function login(username, pw) {
     return { ok: false, reason: 'bad' };
   }
   failCount = 0;
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, now + SESSION_HOURS * 3600 * 1000);
+  const token = makeToken(now + SESSION_HOURS * 3600 * 1000);
   const weak = CRED.username === DEFAULT_USER && String(pw) === DEFAULT_PASS; // 默认口令提示改密
   return { ok: true, token, username: CRED.username, weak };
 }
 
 /** 会话校验(惰性清理过期) */
 function check(token) {
-  if (!token) return false;
-  const exp = sessions.get(token);
-  if (!exp) return false;
-  if (Date.now() > exp) { sessions.delete(token); return false; }
-  return true;
+  if (!token || typeof token !== 'string') return false;
+  const parts = token.split('.');
+  if (parts.length !== 2) return false;
+  const [expHex, sig] = parts;
+  if (!/^[0-9a-f]+$/.test(expHex) || !/^[0-9a-f]{64}$/.test(sig)) return false;
+  const exp = parseInt(expHex, 16);
+  if (!Number.isFinite(exp) || Date.now() > exp) return false;
+  const expected = crypto.createHmac('sha256', getSecret()).update(expHex).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
 }
 
 /** 修改账号: 需旧密码;改用户名/密码后全部会话失效 */
@@ -117,7 +139,7 @@ function update(oldPassword, newUsername, newPassword) {
   if (!changed) return { ok: false, reason: 'nothing_changed' };
   CRED = { username, hash };
   save();
-  sessions.clear(); // 全部失效,重新登录
+  bumpSecret(); // 轮换签名密钥 → 全部历史 token 立即失效,重新登录
   return { ok: true, username };
 }
 

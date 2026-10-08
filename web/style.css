@@ -316,3 +316,9 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 .sub-table td { font-size: .82rem; padding: .38rem .6rem; border-bottom: 1px solid #f0f3f9; }
 .sub-table tr:last-child td { border-bottom: 0; }
 .sub-table .sk-row td { color: #3a4256; }
+
+/* Models 拖拽排序 */
+.model-row { cursor: grab; }
+.model-row.dragging { opacity: .45; }
+.model-row.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
+.model-row.drop-after  { box-shadow: 0  3px 0 0 var(--accent); }

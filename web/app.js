@@ -148,7 +148,7 @@ async function openEditor(name) {
 
 function modelRow(m, i) {
   return `
-  <div class="model-row" data-i="${i}">
+  <div class="model-row" data-i="${i}" draggable="true">
     <input class="m-id" value="${esc(m.id)}" placeholder="model id" title="model id">
     <input class="m-weight" type="number" min="1" max="100" value="${m.weight || 100}" title="权重 1-100,越大越优先">
     <input class="m-usage" type="number" min="0" value="${m.usageLimit ?? ''}" placeholder="成功次数" title="降级后成功 N 次切回主(0=不限)">
@@ -192,6 +192,43 @@ window.delKey = delKey;
 function renderModels(models) {
   $('#models').innerHTML = models.map(modelRow).join('') || '<div class="empty" style="padding:.6rem">还没有 model,点击下方添加</div>';
 }
+
+/* Models 卡片拖拽排序(上下拖动调整顺序,保存时按 DOM 顺序提交) */
+(function () {
+  const list = $('#models');
+  if (!list) return;
+  let dragRow = null;
+  function clearIndicators() { list.querySelectorAll('.model-row').forEach((r) => r.classList.remove('dragging', 'drop-before', 'drop-after')); }
+  list.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('.model-row');
+    if (!row) return;
+    dragRow = row; row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', 'x');
+  });
+  list.addEventListener('dragover', (e) => {
+    if (!dragRow) return;
+    e.preventDefault();
+    const target = e.target.closest('.model-row');
+    list.querySelectorAll('.model-row').forEach((r) => r.classList.remove('drop-before', 'drop-after'));
+    if (!target || target === dragRow) return;
+    const rect = target.getBoundingClientRect();
+    target.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
+  });
+  list.addEventListener('drop', (e) => {
+    if (!dragRow) return;
+    e.preventDefault();
+    const target = e.target.closest('.model-row');
+    if (target && target !== dragRow) {
+      const rect = target.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      target.parentNode.insertBefore(dragRow, before ? target : target.nextSibling);
+    }
+    clearIndicators(); dragRow = null;
+  });
+  list.addEventListener('dragend', () => { clearIndicators(); dragRow = null; });
+  list.addEventListener('dragleave', () => { list.querySelectorAll('.model-row').forEach((r) => r.classList.remove('drop-before', 'drop-after')); });
+})();
 
 // 数字输入: 空 → null(服务端用默认);数字(含 0=不限) → 原值
 function numOrNull(v) { const n = parseInt(v, 10); return Number.isNaN(n) ? null : n; }
@@ -553,6 +590,7 @@ function showLogin(msgText) {
   if (msgText) $('#login-msg').className = 'msg err';
 }
 function showMain(username) {
+  show('dashboard');
   $('#app-header').classList.remove('hidden');
   $('#view-login').classList.add('hidden');
   $('#user-info').classList.remove('hidden');
@@ -627,5 +665,5 @@ function maybeNeedToken(e) {
 
 /* ---------- 启动 ---------- */
 loadHealth();
-if (localStorage.getItem('token')) { loadDashboard(); } else { showLogin(); }
+if (localStorage.getItem('token')) { show('dashboard'); loadDashboard(); } else { showLogin(); }
 setInterval(loadHealth, 15000);
