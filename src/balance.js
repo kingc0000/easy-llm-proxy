@@ -10,11 +10,19 @@
  *  - 降级 key 在降级 model 使用达到 成功次数(usageLimit) 或 时长(useSeconds) 任一限制后
  *    **切回主 model 继续轮询**(到期清理);次数 = 成功返回的次数(2xx)
  *  - 回主后若主仍全部限流 → 重新降级到下一权重;最低权重也全失败 → 清态回主(循环)
- *  - 每 model 的 key 池: 限流/失败才切换下一个 key(advanceKey 仅失败推进)
+ *  - 每 model 的 key 池策略(两种,由 provider.roundRobin 选择):
+ *    · 超限轮询(默认,roundRobin=false): key 用到限流/失败才切 → 进入冷却期(冷却粒度 (model,key),
+ *      因限流多为 model 级);队列指针轮转 + 冷却跳过: 从最近失败 key 的下一个起按序试,冷却中的
+ *      (model,key) 跳过;同层全部冷却 → 自动降级到下一权重 model2。
+ *      冷却时长三层: 全局 DEFAULT_COOLDOWN_MS → model.cooldown → model.keyCooldowns[key]。
+ *    · 平均轮询(roundRobin=true): 每请求严格轮换到下一个 key(平滑分摊),仍按权重层聚合,
+ *      失败同样 advanceKey(冷却粒度同上),成功时记录 lastKey 作为下次轮转起点。
  *
  * 状态(state) 按 provider 持久(内存),跨请求共享:
- *   { degraded: Map<key, {modelId, since, success}>, cursor: Map<key, int>(失败次数,参与排序) }
+ *   { degraded: Map<key,{modelId,since,success}>,
+ *     failAt: Map<"modelId\0key",timestamp>, lastKey: string|null, lastFail: string|null }
  */
+const DEFAULT_COOLDOWN_MS = 60 * 1000; // 默认冷却期(可被 model.cooldown / key 覆盖)
 'use strict';
 
 /** 按权重降序(同权重保持配置顺序) */
@@ -29,7 +37,7 @@ function mainModel(p) {
 
 /** 初始状态 */
 function newState() {
-  return { degraded: new Map(), cursor: new Map() };
+  return { degraded: new Map(), failAt: new Map(), lastKey: null, lastFail: null };
 }
 
 function modelOf(p, id) {
@@ -61,6 +69,21 @@ function nextLower(p, modelId) {
   return null;
 }
 
+/** 冷却时长(秒→ms): key 覆盖 → model.cooldown → 全局默认 */
+function cooldownMs(p, modelId, key) {
+  const m = modelOf(p, modelId);
+  if (m) {
+    if (m.keyCooldowns && Number.isFinite(m.keyCooldowns[key]) && m.keyCooldowns[key] > 0) return m.keyCooldowns[key] * 1000;
+    if (Number.isFinite(m.cooldown) && m.cooldown > 0) return m.cooldown * 1000;
+  }
+  return DEFAULT_COOLDOWN_MS;
+}
+/** 该 (modelId,key) 是否处于冷却期 */
+function inCooldown(p, st, modelId, key) {
+  const ts = st.failAt.get(modelId + '\0' + key);
+  return !!ts && (Date.now() - ts) < cooldownMs(p, modelId, key);
+}
+
 /** 全部 key(去重,保持配置顺序) */
 function allKeys(p) {
   const s = new Set();
@@ -88,8 +111,16 @@ function plan(p, st, requestedId) {
   const req = requestedId ? modelOf(p, requestedId) : null;
 
   // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理);
-  //    key 顺序按失败游标升序(游标=失败次数,失败多的排后 → 不每请求白试失效 key)
-  const keys = allKeys(p).sort((a, b) => (st.cursor.get(a) || 0) - (st.cursor.get(b) || 0));
+  //    key 顺序 = 队列指针轮转一圈:
+  //      超限模式从 lastFail(最近失败 key)的下一个起;平均模式从 lastKey(上次成功)的下一个起。
+  //    冷却中的 (model,key) 在层聚合时跳过(不进候选),全冷却则自动降下一层。
+  const baseKeys = allKeys(p);
+  const rotate = (anchor) => {
+    const i = anchor ? baseKeys.indexOf(anchor) : -1;
+    const s = (i + 1) % baseKeys.length;
+    return baseKeys.slice(s).concat(baseKeys.slice(0, s));
+  };
+  const keys = rotate(p.roundRobin ? st.lastKey : st.lastFail);
   const chainOf = (key) => {
     const d = st.degraded.get(key);
     const start = d ? (modelOf(p, d.modelId) || main) : (req || main);
@@ -114,23 +145,26 @@ function plan(p, st, requestedId) {
   for (const w of weights) {
     for (const key of keys) {
       const mAtW = chainOf(key).find((m) => m.weight === w);
-      if (mAtW) out.push({ modelId: mAtW.id, key });
+      if (mAtW && !inCooldown(p, st, mAtW.id, key)) out.push({ modelId: mAtW.id, key });
     }
   }
   return out;
 }
 
-/** 失败时推进该 key 的游标(失败次数+1) → 候选排序时排后,同一 key 持续使用到限流 */
-function advanceKey(st, key) {
-  const c = st.cursor.get(key) || 0;
-  st.cursor.set(key, c + 1);
+/** 失败时记录该 (modelId,key) 的失败时间(进入冷却期) → 冷却期内该候选被跳过,过期重新可用;
+ *  并推进队列指针到该 key 的下一个(超限模式: 失败才前进,下次请求从它后面起)。 */
+function advanceKey(st, modelId, key) {
+  st.failAt.set(modelId + '\0' + key, Date.now());
+  st.lastFail = key;
 }
 
-/** 结果回报(降级期间某 key 的 2xx 成功计数: 达到 usageLimit 时到期回主) */
+/** 结果回报: 降级期间某 key 的 2xx 成功计数(达 usageLimit 到期回主);
+ *  平均轮询模式下成功时记 lastKey(下次请求轮转起点)。 */
 function report(p, st, modelId, key, ok) {
   if (!ok) return;
   const d = st.degraded.get(key);
   if (d && d.modelId === modelId) d.success++;
+  if (p.roundRobin) st.lastKey = key;
 }
 
 /**

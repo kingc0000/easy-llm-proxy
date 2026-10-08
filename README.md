@@ -16,7 +16,7 @@ Agent / 客户端 ──(OpenAI 兼容)──▶ easy-llm-proxy ──▶ OpenAI
 | --- | --- |
 | 🎯 **加权轮询引擎** | 每 provider 可配多 model，model 配置权重(1-100) 与任意数量 key；主 model 限流 → 换下一个 key → 全部 key 限流 → 按权重降级（100→99→97…，同权重兄弟优先）|
 | 🔄 **自动切回** | 降级期间达到 **成功次数**(usageLimit) 或 **时长**(useSeconds) 任一上限 → 自动切回权重最高的主 model；次数按 **2xx 成功返回**计数 |
-| 🔑 **多 Key 轮询** | 每 model 多个 key 平滑分摊（并发公平，游标预占）；429/5xx/网络错误自动换 key |
+| 🔑 **多 Key 轮转 + 冷却** | 每 model 多个 key：失败即冷却（冷却粒度 **(model,key)**，因限流多为 model 级）+ **指针轮转**（冷却跳过、过期不抢队首）；可选 **平均轮询** 模式做严格分摊 |
 | 🌐 **协议归一化** | `openai`（默认）与 `anthropic`（原生 `/v1/messages` + `x-api-key`）provider 混用；Anthropic 自动做请求体/非流式/流式 SSE 双向转换，**客户端无感**，全程 OpenAI 兼容 |
 | 🔐 **登录认证** | Web 面板登录页（用户名/密码，scrypt 哈希存储、会话 Token、失败锁定），支持**修改用户名/密码**；管理 API 统一鉴权 |
 | 📊 **真实 Token 统计** | 请求 Token / 缓存命中 Token / 输出 Token（OpenAI 与 Anthropic 均真实解析，非字节估算）；请求/成功/重试/降级/耗时聚合 + 小时/日趋势 + 错误类型分布 |
@@ -80,11 +80,13 @@ model:     任意配置中的 model id(自动按权重调度/降级)
       "apiPath": "",                        // 可选,自定义 chat 路径(留空自动)
       "apiKeyHeader": "",                   // 可选,自定义认证头(留空自动)
       "extraHeaders": {},                   // 可选,如 {"anthropic-version":"2023-06-01"}
-      "usageLimit": 5,                      // 降级后成功几次切回主 model(0=不限)
-      "useSeconds": 10,                     // 降级后几秒切回主 model(0=不限)
+      "usageLimit": 5,                      // provider 级兜底: model 未显式配置时回退此值(0=不限)
+      "useSeconds": 10,                     // 同上: 降级后持续秒数(0=不限)
+      "roundRobin": false,                  // false=超限轮询(默认,失败才切) | true=平均轮询(每请求轮换)
       "models": [
         { "id": "deepseek-chat", "weight": 100,
-          "keys": ["sk-主key1", "sk-主key2"] },
+          "cooldown": 30,                   // model 级冷却(秒): 该 model 全部 key 默认
+          "keys": ["sk-主key1", { "key": "sk-主key2", "cooldown": 60 }] },  // 单 key 覆盖冷却
         { "id": "qwen-max", "weight": 99,
           "keys": ["sk-备用key"] }
       ]
@@ -95,9 +97,24 @@ model:     任意配置中的 model id(自动按权重调度/降级)
 
 ### 轮询与降级语义
 
-- 主 model 全部 key 返回 429/5xx/网络错误 → 降级到**更低权重** model（同权重兄弟优先），不跳级
-- 降级 model 成功次数 ≥ `usageLimit` **或** 时长 ≥ `useSeconds` 任一满足 → 切回主 model
-- 所有 model 都失败 → 回到主 model 再做一轮（总尝试数上限防死循环）
+**Key 轮转（默认 超限轮询）**
+
+- 失败（429/5xx/网络错误）的 key 进入**冷却期**并**推进轮转指针**；下次从指针位置按序试，**冷却中的 (model,key) 直接跳过**
+- 冷却粒度是 **(model, key)**：因限流多为 model 级，key1 在 A model 限流后换到 B model 用不受影响
+- 冷却过期只是「重新可用」，**位置仍由指针决定**——要等排它后面的 key 也都限流一圈才回到它，避免刚恢复就抢占队首
+- **冷却时长三层**：全局默认 60s → `model.cooldown` → 单 key `cooldown`；无配置行为与旧版一致
+- 某 model 全部 key 都冷却 → 候选自然落到下一权重 model，无需额外配置
+
+**平均轮询（`"roundRobin": true`）**
+
+- 每请求严格轮换到下一个 key（从上次成功 key 的下一个起），失败时冷却/推进语义不变
+- 适合「多个 key 额度均等、想按次严格均摊」的场景；不限流也会轮换
+
+**降级链（per-key）**
+
+- 某权重层的**全部 key** 都失败 → 这些 key 各自记录降级到**更低权重** model（同权重兄弟优先），不跳级；其余 key 不受影响继续用主 model
+- 降级 key 成功次数 ≥ `usageLimit` **或** 时长 ≥ `useSeconds` 任一满足 → 该 key 切回主 model 继续轮询
+- 已是最深权重也失败 → 清降级态回主重做一轮（总尝试数上限防死循环）
 - `weight` 越大越优先（1-100）；同 provider 同 model id 重复配置保留首个
 
 ### 环境变量

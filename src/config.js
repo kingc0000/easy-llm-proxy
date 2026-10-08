@@ -47,16 +47,20 @@ function normalizeProvider(p, i) {
   const pickLimit = (m) => (Number.isInteger(m.usageLimit) && m.usageLimit >= 0 ? m.usageLimit : defUsageLimit);
   const pickSeconds = (m) => (Number.isInteger(m.useSeconds) && m.useSeconds >= 0 ? m.useSeconds : defUseSeconds);
 
-  // key 归一: 字符串 或 {value,note} 对象(备注非必填)
+  // key 归一: 字符串 或 {value,note} 对象 / {key,cooldown} 对象(cooldown 秒,key 级冷却覆盖)
   const normalizeKeys = (arr) => {
     if (!Array.isArray(arr)) return [];
     const out = [];
     for (const item of arr) {
-      let value = '', note = '';
+      let value = '', note = '', cooldown = null;
       if (typeof item === 'string') value = item;
-      else if (item && typeof item === 'object') { value = String(item.value ?? item.key ?? ''); note = String(item.note ?? ''); }
+      else if (item && typeof item === 'object') {
+        value = String(item.value ?? item.key ?? '');
+        note = String(item.note ?? '');
+        if (Number.isFinite(item.cooldown) && item.cooldown > 0) cooldown = item.cooldown;
+      }
       value = value.trim();
-      if (value && !out.some((k) => k.value === value)) out.push({ value, note });
+      if (value && !out.some((k) => k.value === value)) out.push({ value, note, cooldown });
     }
     return out;
   };
@@ -68,14 +72,19 @@ function normalizeProvider(p, i) {
   if (Array.isArray(p.models) && p.models.length) {
     for (const m of p.models) {
       if (!m || !m.id) continue;
-      const ownKeys = normalizeKeys(m.keys).map((k) => k.value);
+      const ownKeysRaw = normalizeKeys(m.keys);
+      const ownKeys = ownKeysRaw.map((k) => k.value);
       const keys = ownKeys.length ? ownKeys : providerKeys; // model 无 key → 共享 provider 池
       if (!keys.length) continue;
+      const keyCooldowns = {};
+      for (const k of ownKeysRaw) if (k.cooldown != null) keyCooldowns[k.value] = k.cooldown;
       models.push({
         id: String(m.id),
         weight: clampWeight(m.weight),
         usageLimit: pickLimit(m),
         useSeconds: pickSeconds(m),
+        cooldown: (Number.isFinite(m.cooldown) && m.cooldown > 0) ? m.cooldown : null, // model 级冷却(秒)
+        keyCooldowns, // key 级冷却覆盖(秒)
         keys,
       });
     }

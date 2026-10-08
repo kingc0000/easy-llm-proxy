@@ -7,13 +7,18 @@
       "baseURL": "https://token.sensenova.cn",
       "usageLimit": 5,
       "useSeconds": 10,
+      "roundRobin": false,
       "models": [
         {
           "id": "deepseek-v4-flash",
           "weight": 100,
           "usageLimit": 3,
           "useSeconds": 10,
-          "keys": ["sk-这里放主key"]
+          "cooldown": 30,
+          "keys": [
+            "sk-这里放主key",
+            { "key": "sk-第二个key", "cooldown": 60 }
+          ]
         },
         {
           "id": "sensenova-6.8-flash-lite",

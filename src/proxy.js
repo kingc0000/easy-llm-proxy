@@ -180,7 +180,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
       return outputFail(res, provider, result, 0, rec);
     }
     stats.bump(provider.name, c.modelId, c.key, 'retries');
-    balance.advanceKey(st, c.key); // 仅在失败时推进 key 游标(失败次数) → 候选排序排后,同一 key 持续使用到限流
+    balance.advanceKey(st, c.modelId, c.key); // 失败 key 进入冷却期 → 冷却期内候选排后,过期后重新试探
     console.log(`[proxy] ${method} ${pathname} -> ${result.status || 'ERR'} | ${provider.name}/${c.modelId} key ${shortKey(c.key)} (${d.reason}) 尝试 ${attempts}/${cap}`);
 
     // retry: 该 model 的 key 已耗尽 → 降级重排(passThrough 模式不跨 model 降级,直接耗尽)
