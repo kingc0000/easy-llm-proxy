@@ -346,14 +346,18 @@ $('#btn-test').addEventListener('click', async () => {
 
 /* ---------- 统计 ---------- */
 function fmtBytes(b) { if (!b) return '0'; if (b >= 1048576) return (b / 1048576).toFixed(1) + 'MB'; if (b >= 1024) return (b / 1024).toFixed(0) + 'KB'; return b + 'B'; }
-function fmtHour(h) { const d = new Date(h); return String(d.getHours()).padStart(2, '0') + ':00'; }
+// 趋势小时标签: hour 形如 "2026-10-08T10"(UTC);补全秒+Z 后缀才能被 Chrome 解析,并转为浏览器本地时区显示
+function fmtHour(h) { const d = new Date(String(h).slice(0, 13) + ':00:00Z'); return (Number.isNaN(d.getTime()) ? (String(h).slice(11, 13) || '?') : String(d.getHours()).padStart(2, '0')) + ':00'; }
 
 function renderKpis(s) {
   const err = s.errorTypes || {};
   const kpi = (label, val, sub = '') => `<div class="kpi"><div class="kpi-v">${val}</div><div class="kpi-l">${label}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ''}</div>`;
+  const inTok = (s.promptTokens || 0) + (s.cachedTokens || 0);
+  const cacheRate = inTok > 0 ? Math.round((s.cachedTokens || 0) / inTok * 1000) / 10 : 0;
   $('#stats-summary').innerHTML =
     kpi('总请求', s.requests) +
-    kpi('成功率', (s.successRate ?? 0) + '%', `${s.ok} 成功 / ${s.errors} 失败 / ${s.retries} 重试`) +
+    kpi('成功率', (s.successRate ?? 0) + '%', `${s.ok} 成功 / ${s.failed} 失败尝试 / ${s.retries} 重试`) +
+    kpi('缓存率', cacheRate + '%', `缓存 ${(s.cachedTokens || 0).toLocaleString()} tok / 输入 ${inTok.toLocaleString()} tok`) +
     kpi('限流(429)', err['429'] || 0, `5xx: ${err['5xx'] || 0} · 网络: ${err['net'] || 0} · 模型: ${err['model'] || 0} · 超时: ${err['timeout'] || 0}`) +
     kpi('降级次数', s.degrades, '权重引擎限流降级') +
     kpi('平均耗时', s.avgMs + 'ms') +
@@ -408,13 +412,13 @@ function renderStatsTree(providers, byKey) {
     const modelRows = p.models.map((m) => {
       const ks = keyMap.get(p.name + '\u0000' + m.id) || [];
       const keyRows = ks.map((k) => `<tr class="sk-row">
-          <td class="mono">${esc(k.key)}</td><td>${k.requests}</td><td>${k.ok}</td><td>${k.errors}</td>
+          <td class="mono">${esc(k.key)}</td><td>${k.requests}</td><td>${k.ok}</td><td>${k.failed}</td>
           <td>${_rate(k.requests, k.ok)}</td><td>${k.avgMs}ms</td>
           <td>${(k.promptTokens || 0).toLocaleString()}</td><td>${(k.cachedTokens || 0).toLocaleString()}</td><td>${(k.completionTokens || 0).toLocaleString()}</td>
           <td>${fmtBytes(k.outputBytes)}</td><td>${k.lastSeen ? new Date(k.lastSeen).toLocaleTimeString() : '-'}</td>
         </tr>`).join('');
       return `<tr class="sm-row" data-p="${esc(p.name)}" data-m="${esc(m.id)}">
-          <td>${_arrow(0)} <b>${esc(m.id)}</b></td><td>${m.requests}</td><td>${m.ok}</td><td>${m.errors}</td>
+          <td>${_arrow(0)} <b>${esc(m.id)}</b></td><td>${m.requests}</td><td>${m.ok}</td><td>${m.failed}</td>
           <td>${_rate(m.requests, m.ok)}</td><td>${m.avgMs}ms</td>
           <td>${(m.promptTokens || 0).toLocaleString()}</td><td>${(m.cachedTokens || 0).toLocaleString()}</td><td>${(m.completionTokens || 0).toLocaleString()}</td>
           <td>${fmtBytes(m.outputBytes)}</td><td></td>
@@ -425,7 +429,7 @@ function renderStatsTree(providers, byKey) {
         </table></td></tr>`;
     }).join('');
     return `<tr class="sp-row" data-p="${esc(p.name)}">
-        <td>${_arrow(0)} <b>${esc(p.name)}</b></td><td>${p.requests}</td><td>${p.ok}</td><td>${p.errors}</td>
+        <td>${_arrow(0)} <b>${esc(p.name)}</b></td><td>${p.requests}</td><td>${p.ok}</td><td>${p.failed}</td>
         <td>${_rate(p.requests, p.ok)}</td><td>${p.retries}</td><td>${p.avgMs}ms</td>
         <td>${(p.promptTokens || 0).toLocaleString()}</td><td>${(p.cachedTokens || 0).toLocaleString()}</td><td>${(p.completionTokens || 0).toLocaleString()}</td>
         <td>${fmtBytes(p.outputBytes)}</td>

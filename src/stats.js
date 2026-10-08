@@ -148,9 +148,11 @@ function save() {
 
 /* ---------- 查询快照 ---------- */
 
+function errSum(o) { return Object.values(o.errorTypes || {}).reduce((a, b) => a + b, 0); }
+
 function snapshot() {
   return Object.values(STATE.keys)
-    .map((s) => ({ ...s, avgMs: s.requests ? Math.round(s.totalMs / s.requests) : 0, inputTokensEst: Math.round(s.inputBytes / 4), outputTokensEst: Math.round(s.outputBytes / 4), promptTokens: s.promptTokens || 0, cachedTokens: s.cachedTokens || 0, completionTokens: s.completionTokens || 0 }))
+    .map((s) => ({ ...s, failed: (s.errors || 0) + errSum(s), avgMs: s.requests ? Math.round(s.totalMs / s.requests) : 0, inputTokensEst: Math.round(s.inputBytes / 4), outputTokensEst: Math.round(s.outputBytes / 4), promptTokens: s.promptTokens || 0, cachedTokens: s.cachedTokens || 0, completionTokens: s.completionTokens || 0 }))
     .sort((a, b) => b.requests - a.requests);
 }
 
@@ -161,25 +163,30 @@ function summary() {
     a.requests += s.requests || 0; a.ok += s.ok || 0; a.errors += s.errors || 0; a.retries += s.retries || 0;
     a.inputBytes += s.inputBytes || 0; a.outputBytes += s.outputBytes || 0; a.totalMs += s.totalMs || 0;
     a.promptTokens += s.promptTokens || 0; a.cachedTokens += s.cachedTokens || 0; a.completionTokens += s.completionTokens || 0;
+    a.failed += (s.errors || 0) + errSum(s);
     for (const [t, n] of Object.entries(s.errorTypes || {})) a.errorTypes[t] = (a.errorTypes[t] || 0) + n;
     return a;
-  }, { requests: 0, ok: 0, errors: 0, retries: 0, inputBytes: 0, outputBytes: 0, totalMs: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0, errorTypes: {} });
+  }, { requests: 0, ok: 0, errors: 0, retries: 0, inputBytes: 0, outputBytes: 0, totalMs: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0, errorTypes: {}, failed: 0 });
 
   // 按 provider 汇总
   const byProvider = new Map();
   for (const s of keys) {
     let p = byProvider.get(s.provider);
-    if (!p) { p = { name: s.provider, requests: 0, ok: 0, errors: 0, retries: 0, inputBytes: 0, outputBytes: 0, totalMs: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0, models: new Map() }; byProvider.set(s.provider, p); }
+    if (!p) { p = { name: s.provider, requests: 0, ok: 0, errors: 0, failed: 0, retries: 0, inputBytes: 0, outputBytes: 0, totalMs: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0, models: new Map() }; byProvider.set(s.provider, p); }
     p.requests += s.requests || 0; p.ok += s.ok || 0; p.errors += s.errors || 0; p.retries += s.retries || 0;
     p.inputBytes += s.inputBytes || 0; p.outputBytes += s.outputBytes || 0; p.totalMs += s.totalMs || 0;
     p.promptTokens += s.promptTokens || 0; p.cachedTokens += s.cachedTokens || 0; p.completionTokens += s.completionTokens || 0;
+    p.failed += (s.errors || 0) + errSum(s);
     let m = p.models.get(s.model);
-    if (!m) { m = { id: s.model, requests: 0, ok: 0, errors: 0 }; p.models.set(s.model, m); }
-    m.requests += s.requests; m.ok += s.ok; m.errors += s.errors;
+    if (!m) { m = { id: s.model, requests: 0, ok: 0, errors: 0, failed: 0, retries: 0, totalMs: 0, inputBytes: 0, outputBytes: 0, promptTokens: 0, cachedTokens: 0, completionTokens: 0 }; p.models.set(s.model, m); }
+    m.requests += s.requests; m.ok += s.ok; m.errors += s.errors; m.retries += s.retries || 0;
+    m.failed += (s.errors || 0) + errSum(s);
+    m.totalMs += s.totalMs || 0; m.inputBytes += s.inputBytes || 0; m.outputBytes += s.outputBytes || 0;
+    m.promptTokens += s.promptTokens || 0; m.cachedTokens += s.cachedTokens || 0; m.completionTokens += s.completionTokens || 0;
   }
   const providers = [...byProvider.values()].map((p) => ({
     ...p,
-    models: [...p.models.values()],
+    models: [...p.models.values()].map((m) => ({ ...m, avgMs: m.requests ? Math.round(m.totalMs / m.requests) : 0 })),
     avgMs: p.requests ? Math.round(p.totalMs / p.requests) : 0,
   }));
 
@@ -208,7 +215,7 @@ function summary() {
 
   return {
     summary: {
-      requests: agg.requests, ok: agg.ok, errors: agg.errors, retries: agg.retries,
+      requests: agg.requests, ok: agg.ok, errors: agg.errors, failed: agg.failed, retries: agg.retries,
       inputBytes: agg.inputBytes, outputBytes: agg.outputBytes,
       successRate: agg.requests ? Math.round((agg.ok / agg.requests) * 1000) / 10 : null,
       avgMs: agg.requests ? Math.round(agg.totalMs / agg.requests) : 0,
