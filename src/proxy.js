@@ -148,14 +148,14 @@ async function handleChat(req, res, pathname, method, body, pick) {
             if (add.completion) rec.completionTokens = add.completion;
           }
           // 流式响应: 只保留精简后的内容文本(丢弃 SSE 协议元数据,日志体积降 90%+)
-          const rr = sse.push(ch);
+          sse.push(ch); // push 无返回值,直接读 sse.state
           if (rec.sseLen < requests.MAX_REC) {
-            const grow = Math.min(rr.state.text.length - rec.sseLen, requests.MAX_REC - rec.sseLen);
-            rec.sseText = (rec.sseText || '') + rr.state.text.slice(rec.sseLen, rec.sseLen + grow);
+            const grow = Math.min(sse.state.text.length - rec.sseLen, requests.MAX_REC - rec.sseLen);
+            rec.sseText = (rec.sseText || '') + sse.state.text.slice(rec.sseLen, rec.sseLen + grow);
             rec.sseLen += grow;
-            if (rr.state.text.length > rec.sseLen) rec.truncated = true;
+            if (sse.state.text.length > rec.sseLen) rec.truncated = true;
           }
-          if (rr.state.error) rec.error = rr.state.error;
+          if (sse.state.error) rec.error = sse.state.error;
         });
         result.stream.on('end', () => logRec(rec)); // 流式响应完整结束才落盘
       } else if (result.body) {
@@ -234,9 +234,13 @@ function sseReducer() {
         let j; try { j = JSON.parse(payload); } catch { continue; }
         if (j.error) { state.error = j.error.message || 'stream error'; continue; }
         const delta = j.choices && j.choices[0] && j.choices[0].delta;
-        if (delta && typeof delta.content === 'string') state.text += delta.content;
-      return { state }; // 调用方用 rr.state.text/error(重构遗漏: 原实现无 return → rr 为 undefined)
+        if (delta) {
+          // content(标准)与 reasoning_content(推理模型如 deepseek-v4)都记录
+          if (typeof delta.content === 'string') state.text += delta.content;
+          if (typeof delta.reasoning_content === 'string') state.text += delta.reasoning_content;
+        }
       }
+      return { state }; // 返回值供调用方用 rr.state(位置必须在 while 之后,否则每行就 return 会丢尾部)
     },
     flush() { return buf; },
   };
