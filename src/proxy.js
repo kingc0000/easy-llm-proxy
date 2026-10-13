@@ -169,7 +169,11 @@ async function handleChat(req, res, pathname, method, body, pick) {
         }
         if (rec.res === null) { rec.res = result.body.toString('utf8'); logRec(rec); } // openai 非流式直接记录
       }
+      const wasDegraded = st.degraded.has(c.key);
       balance.report(provider, st, c.modelId, c.key, true);
+      if (wasDegraded && !st.degraded.has(c.key)) { // 主 model 恢复成功 → 立即结束该 key 降级
+        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: shortKey(c.key), reason: '主 model 恢复成功 切回主' });
+      }
       return outputOk(res, provider, result, parsed && parsed.stream, parsed && parsed.model, rec);
     }
     if (d.kind === 'final') {
@@ -180,7 +184,8 @@ async function handleChat(req, res, pathname, method, body, pick) {
     balance.advanceKey(st, c.modelId, c.key); // 失败 key 进入冷却期 → 冷却期内该候选跳过,过期后重新可用
     console.log(`[proxy] ${method} ${pathname} -> ${result.status || 'ERR'} | ${provider.name}/${c.modelId} key ${shortKey(c.key)} (${d.reason}) 尝试 ${attempts}/${cap}`);
 
-    // retry: 该 model 的 key 已耗尽 → 降级重排(passThrough 模式不跨 model 降级,直接耗尽)
+    // retry: 该 model 的 key 已耗尽 → 记降级态(影响后续请求);不重排,继续消费静态计划里
+    //        已铺好的 [主, 备2, 主(重试), 备3, …] 降级链(passThrough 模式不跨 model 降级,直接耗尽)
     const remainingOfModel = planList.slice(planIdx).filter((x) => x.modelId === c.modelId).length;
     if (remainingOfModel === 0) {
       if (passThrough) break; // 未配置的 model 只换 key,不降级(保持 v1 行为)
@@ -191,9 +196,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
         stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '最低权重也失败 回主重试' });
       }
       degradeCount++;
-      planList = rePlan(requestedModel);
-      planIdx = 0;
-      if (degradeCount > provider.models.length + 2) break; // 兜底防无限降级
+      if (degradeCount > provider.models.length * 2 + 2) break; // 兜底防无限降级
     }
   }
 
