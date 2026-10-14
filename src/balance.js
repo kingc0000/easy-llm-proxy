@@ -95,32 +95,39 @@ function allKeys(p) {
 
 /**
  * 生成尝试计划(候选列表,顺序即尝试顺序)。
- *  1) 到期清理降级态(次数/时长达标): 主 model 不在冷却期 → 切回主;
- *     主 model 仍在冷却 → 下探一层(如 m2→m3,重新起降级期);无更低层 → 清态回主
+ *  1) 到期清理(次数/时长达标),**整层统一**: 同一降级目标的全部 key 都达限才切换——
+ *     主 model 已过冷却 → 整层回主;主仍在冷却 → 整层下探一层(如 m2→m3,重新起降级期);
+ *     无更低层 → 清态回主;本层还有 key 未达限 → 整层保持不动(不提前切)
  *  2) 每 key 一条链: 降级中从降级 model 起,否则从主(或请求 model)起;链内按权重降序(同权重兄弟)
  *     → 降级 key 在降级期用完之前一直留在当前降级 model(不因主冷却过期而提前回主)
  *  3) 按权重层聚合: 最高权重层(所有 key 的主候选) → 下一权重层(所有 key 的链中该层候选) → …
- *     → "第一权重(全 key)都限流才切第二权重";per-key 独立降级/恢复互不影响
+ *     → "第一权重(全 key)都限流才切第二权重";整层一起降级/恢复
  *  4) 冷却中的 (model,key) 不进候选(跳过),全冷却则该层为空、自动落到下一层
  */
 function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
 
   // 1) 到期清理(次数/时长达标);调用方 diff 前后 Map 记 recover 事件
+  const main = mainModel(p);
+  const groups = new Map(); // 降级目标 modelId → [keys]
   for (const [k, d] of [...st.degraded]) {
-    if (keyDegradedDue(p, d)) {
-      const main = mainModel(p);
-      if (!inCooldown(p, st, main.id, k)) {
-        st.degraded.delete(k); // 降级期用完且主已过冷却 → 回主
-      } else {
-        const nxt = nextLower(p, d.modelId); // 主仍在冷却 → 下探一层
-        if (!nxt) st.degraded.delete(k);     // 已是最低 → 清态回主(主冷却过后再试)
-        else st.degraded.set(k, { modelId: nxt.id, since: Date.now(), success: 0 });
-      }
+    if (!groups.has(d.modelId)) groups.set(d.modelId, []);
+    groups.get(d.modelId).push(k);
+  }
+  for (const [gModel, gkeys] of groups) {
+    // 本层全部 key 都达限(次数/时长)才切;还有未达限 → 保持不动
+    if (!gkeys.every((k) => keyDegradedDue(p, st.degraded.get(k)))) continue;
+    const mainPassed = gkeys.every((k) => !inCooldown(p, st, main.id, k)); // 主是否已过冷却期
+    if (mainPassed) {
+      for (const k of gkeys) st.degraded.delete(k); // 整层回主
+    } else {
+      const nxt = nextLower(p, gModel);              // 主仍冷却 → 整层下探
+      if (!nxt) { for (const k of gkeys) st.degraded.delete(k); continue; } // 无更低 → 清态回主
+      const now = Date.now();
+      for (const k of gkeys) st.degraded.set(k, { modelId: nxt.id, since: now, success: 0 });
     }
   }
 
-  const main = mainModel(p);
   const req = requestedId ? modelOf(p, requestedId) : null;
 
   // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理);
@@ -184,28 +191,30 @@ function report(p, st, modelId, key, ok) {
 }
 
 /**
- * 某权重层的全部 key 都尝试失败(proxy 判定) → per-key 决策(回主 or 下探):
- *  - 主 model 对该 key 不在冷却期 → 清除降级态回主(重新尝试主 model)
- *  - 主 model 仍在冷却期 → 降级到当前所在 model 的下一权重(更深链式降级,m2→m3),
+ * 某权重层的全部 key 都尝试失败(proxy 判定,即本层所有 key 都达限) → **整层统一**决策:
+ *  - 主 model 已过冷却期 → 本层全部清除降级态回主(重新尝试主 model)
+ *  - 主 model 仍在冷却期 → 本层全部降级到当前层的下一权重(更深链式降级,m2→m3),
  *    重新起降级期;已是最低权重 → 清态回主(主冷却过再试)
  * 返回 { toModel, cleared } 供事件记录。
  */
 function degrade(p, st, failedModelId, keys) {
   const main = mainModel(p);
+  // 整层统一判定: 主 model 已过冷却期 = 本层所有 key 的主冷却都已过
+  const mainPassed = keys.every((k) => !inCooldown(p, st, main.id, k));
+  if (mainPassed) {
+    let cleared = 0;
+    for (const k of keys) { if (st.degraded.delete(k)) cleared++; }
+    return { toModel: null, cleared };
+  }
+  // 主仍在冷却 → 整层下探一层
+  const lower = nextLower(p, failedModelId);
   let toModel = null;
   let cleared = 0;
+  const now = Date.now();
   for (const k of keys) {
-    if (!inCooldown(p, st, main.id, k)) {
-      // 主 model 已过冷却期 → 回主重试(达限触发: 次数/时长/限流任一)
-      if (st.degraded.delete(k)) cleared++;
-      continue;
-    }
-    // 主 model 仍在冷却 → 从当前所在 model 下探一层
-    const cur = st.degraded.has(k) ? st.degraded.get(k).modelId : failedModelId;
-    const nxt = nextLower(p, cur);
-    if (!nxt) { if (st.degraded.delete(k)) cleared++; continue; } // 已是最低 → 清态回主
-    st.degraded.set(k, { modelId: nxt.id, since: Date.now(), success: 0 });
-    toModel = toModel || nxt.id;
+    if (!lower) { if (st.degraded.delete(k)) cleared++; continue; } // 已是最低 → 清态回主
+    st.degraded.set(k, { modelId: lower.id, since: now, success: 0 });
+    toModel = toModel || lower.id;
   }
   return { toModel, cleared };
 }

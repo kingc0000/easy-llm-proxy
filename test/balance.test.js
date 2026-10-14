@@ -60,10 +60,15 @@ module.exports = async () => {
     bal.advanceKey(st, 'm100', 'k100a'); // 失败先进冷却
     bal.advanceKey(st, 'm100', 'k100b');
     bal.degrade(limP, st, 'm100', ['k100a', 'k100b']); // 主冷却中 → 降级 m99
-    bal.report(limP, st, 'm99', 'k100a', true); // 成功 1 → 达标
+    bal.report(limP, st, 'm99', 'k100a', true); // k100a 成功 1 → 达限
+    const pMid = bal.plan(limP, st, 'm100');
+    assert.strictEqual(pMid.find((c) => c.key === 'k100a').modelId, 'm99'); // k100b 未达限 → 整层不切
+    bal.report(limP, st, 'm99', 'k100b', true); // k100b 也达限 → 整层可切
     st.failAt.set('m100\u0000k100a', Date.now() - 61 * 1000); // 主已过冷却
+    st.failAt.set('m100\u0000k100b', Date.now() - 61 * 1000);
     const p = bal.plan(limP, st, 'm100');
-    assert.strictEqual(p.find((c) => c.key === 'k100a').modelId, 'm100'); // 降级期用完+主过冷却 → 回主
+    assert.strictEqual(p.find((c) => c.key === 'k100a').modelId, 'm100'); // 整层回主
+    assert.strictEqual(p.find((c) => c.key === 'k100b').modelId, 'm100');
   });
 
   t('降级 model 时长到期(useSeconds) → 切回主 model', () => {
@@ -280,6 +285,20 @@ module.exports = async () => {
     for (const k of allK) st.failAt.set('m100\0' + k, Date.now() - 61 * 1000);
     const p2 = bal.plan(secP, st, null);
     assert.strictEqual(p2[0].modelId, 'm100'); // 降级期用完 + 主过冷却 → 回主优先
+  });
+
+  t('层切换必须整层: 部分 key 主已过冷却也不单独回主(整层统一切换)', () => {
+    const st = bal.newState();
+    bal.advanceKey(st, 'm100', 'k100a');
+    bal.advanceKey(st, 'm100', 'k100b');
+    bal.advanceKey(st, 'm100', 'k99a');
+    bal.degrade(P, st, 'm100', ['k100a', 'k100b', 'k99a']); // → m99
+    st.failAt.set('m100\u0000k100a', Date.now() - 61 * 1000); // 仅 k100a 的主过冷却
+    const dg = bal.degrade(P, st, 'm99', ['k100a', 'k100b', 'k99a']); // m99 整层耗尽
+    assert.strictEqual(dg.toModel, 'm97'); // 并非整层主都过冷却 → 整层下探 m97
+    assert.strictEqual(st.degraded.get('k100a').modelId, 'm97'); // k100a 不单独回主
+    assert.strictEqual(st.degraded.get('k100b').modelId, 'm97');
+    assert.strictEqual(st.degraded.get('k99a').modelId, 'm97');
   });
 
   t('主 model 成功 → 兜底解除该 key 降级(防御性;正常流程降级 key 不进入主层)', () => {
