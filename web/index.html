@@ -15,6 +15,7 @@
   </div>
   <nav>
     <button class="tab active" data-tab="dashboard">Providers</button>
+    <button class="tab" data-tab="keys">外部接入</button>
     <button class="tab" data-tab="stats">统计</button>
     <button class="tab" data-tab="requests">记录</button>
     <span id="health" class="health">…</span>
@@ -153,6 +154,70 @@
     </div>
     <div id="req-list" class="req-list"></div>
   </section>
+
+  <!-- 外部接入 key -->
+  <section id="view-keys" class="view hidden">
+    <div class="bar">
+      <h2>外部接入 Key</h2>
+      <span id="keys-mode" class="req-desc"></span>
+    </div>
+
+    <div class="grid2" style="align-items:start">
+      <div class="card">
+        <h3>接入方式 <small>baseURL + key</small></h3>
+        <label>baseURL<small>外部客户端指向此地址(以 /v1 结尾)</small>
+          <input id="k-base" readonly></label>
+        <div class="bar" style="margin-top:.6rem">
+          <button id="btn-copy-base" class="btn small">⧉ 复制 baseURL</button>
+          <button id="btn-create-key" class="btn small primary">+ 创建接入 Key</button>
+          <span id="keys-msg" class="msg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>SDK 示例</h3>
+        <div style="overflow:auto"><table class="kv">
+          <tr><td style="width:130px">OpenAI 兼容</td><td><code id="ex-curl"></code></td></tr>
+          <tr><td>Python SDK</td><td><code id="ex-py"></code></td></tr>
+          <tr><td>Anthropic SDK</td><td><code id="ex-anth"></code></td></tr>
+        </table></div>
+        <p class="hint">认证头二选一：<code>Authorization: Bearer sk-elp-...</code> 或 <code>x-api-key: sk-elp-...</code></p>
+      </div>
+    </div>
+
+    <h3 style="margin:1rem 0 .4rem">Key 列表 <small>明文只在创建时返回一次;此处仅存哈希,无法回查</small></h3>
+    <table class="kv" id="keys-table">
+      <thead><tr>
+        <th>名称</th><th>Key</th><th>创建时间</th><th>最后使用</th><th>请求数</th><th>Token</th><th>操作</th>
+      </tr></thead>
+      <tbody><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </section>
+
+  <!-- 创建接入 key -->
+  <div id="key-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3 id="key-modal-title">创建接入 Key</h3>
+      <form id="key-form">
+        <label>名称<small>用于区分调用方(如「外部用户A」「测试环境」)</small>
+          <input id="f-key-name" required maxlength="64" placeholder="外部用户A"></label>
+        <div class="bar">
+          <button type="button" id="btn-key-cancel" class="btn ghost">取消</button>
+          <button type="submit" class="btn primary">创建</button>
+        </div>
+        <div id="key-form-msg" class="msg"></div>
+      </form>
+      <div id="key-new" class="hidden" style="margin-top:1rem">
+        <div class="msg ok" style="margin-bottom:.5rem">⚠ 此 key 只显示这一次，请立即复制保存；关闭后无法找回</div>
+        <label>Key
+          <input id="key-new-value" readonly></label>
+        <div class="bar" style="margin-top:.6rem">
+          <button id="btn-key-copy" class="btn primary">⧉ 复制 Key</button>
+          <button id="btn-key-done" class="btn ghost">我已保存</button>
+        </div>
+        <div id="key-new-msg" class="msg"></div>
+      </div>
+    </div>
+  </div>
 
 <!-- 修改账号 -->
 <div id="account-modal" class="modal hidden">

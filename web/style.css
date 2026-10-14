@@ -361,3 +361,14 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   font-size: .78rem; padding: .35rem .55rem; border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0,0,0,.25); white-space: nowrap;
 }
+
+/* 外部接入 Key 页 */
+.hint { font-size: .78rem; color: var(--muted); margin: .55rem 0 0; line-height: 1.5; }
+.key-base { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: .92rem; }
+#keys-table code, #ex-curl, #ex-py, #ex-anth {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .78rem; word-break: break-all;
+}
+.key-name { font-weight: 600; }
+.keys-mode-on { color: var(--ok, #16a34a); font-weight: 600; }
+.keys-mode-open { color: #b45309; font-weight: 600; }

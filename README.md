@@ -58,12 +58,53 @@ PROXY_PUBLIC_PORT=8790 ADMIN_TOKEN=你的管理令牌 docker compose up -d --bui
 任何 OpenAI 兼容客户端：
 
 ```
-base_url:  http://127.0.0.1:8790/v1
+base_url:  http://127.0.0.1:8790/v1        # 或公网 https://elp.example.com/v1
 api_key:   任意值(代理使用服务端配置的多 Key,客户端 Key 被忽略)
 model:     任意配置中的 model id(自动按权重调度/降级)
 ```
 
 > 用 `X-Provider-Name: 名称` 请求头可强制指定某 provider；未配置的 model 验证透传原 id + 主 Key 池（不跨 model 降级）。
+
+### 🔑 外部接入(baseURL + key)
+
+把服务暴露给外部用户时，为每个调用方创建独立的接入 key。一旦创建过 key，
+`/v1/*` 立即强制鉴权；**吊销全部 key 也不会退回开放模式**(fail closed)。
+
+| 方式 | 说明 |
+|------|------|
+| Web 面板「外部接入」标签 | 图形化创建/吊销，含 baseURL 与 SDK 示例 |
+| 管理 API | `POST /api/keys {"name":"外部用户A"}` → 返回 `key`(仅创建时可见)；`DELETE /api/keys/:id` 吊销 |
+
+客户端接入方式：
+
+```
+base_url:  https://elp.example.com/v1
+api_key:   sk-elp-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+认证头二选一：`Authorization: Bearer sk-elp-...` 或 `x-api-key: sk-elp-...`
+
+```bash
+# curl
+curl https://elp.example.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-elp-..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}'
+
+# Python(OpenAI SDK)
+from openai import OpenAI
+client = OpenAI(base_url="https://elp.example.com/v1", api_key="sk-elp-...")
+resp = client.chat.completions.create(model="deepseek-v4-flash", messages=[{"role":"user","content":"hi"}])
+
+# Anthropic SDK(自动转 /v1/messages)
+import anthropic
+client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp-...")
+```
+
+- **安全**：key 明文只在创建时返回一次，落盘仅存 HMAC-SHA256 摘要(`keys.json` + `keys-secret`,均为 0600)
+- **吊销**：即时生效，无需重启；已吊销 key 保留在列表中供审计
+- **计数**：每个 key 独立记录请求数/token 消耗(节流落盘,每 10 次写一次)
+- **开放模式**：未创建任何 key 时 `/v1` 无鉴权(仅建议内网/本机);需要彻底回到开放可设 `OPEN_ACCESS=1` 或删除 `keys.json`
 
 ## ⚙️ 配置
 
@@ -135,6 +176,9 @@ model:     任意配置中的 model id(自动按权重调度/降级)
 | `AUTH_USER` / `AUTH_PASS` | `admin` / `admin123` | 首次创建登录账号（已有 `auth.json` 不覆盖，生产请改默认密码）|
 | `AUTH_FILE` | `/etc/easy-llm-proxy/auth.json` | 账号凭证文件（scrypt 哈希，600 权限）|
 | `SESSION_HOURS` | `168` | 登录会话有效期(小时) |
+| `KEYS_FILE` | `/etc/easy-llm-proxy/keys.json` | 外部接入 key 存储(只存 HMAC 哈希,600 权限)|
+| `KEYS_SECRET_FILE` | `/etc/easy-llm-proxy/keys-secret` | key 签名密钥(0600;丢失则历史 key 全部失效)|
+| `OPEN_ACCESS` | 空 | 设为 `1` 强制开放 `/v1`(本地自用;忽略 keys.json)|
 | `TIMEOUT_MS` | `120000` | 上游请求超时(毫秒) |
 
 ## 🖥️ Web 管理面板
@@ -144,6 +188,7 @@ model:     任意配置中的 model id(自动按权重调度/降级)
 | 页面 | 功能 |
 | --- | --- |
 | **Providers** | 卡片化查看/编辑 Provider、Model、Key、权重、**冷却秒数**；一键测试连接（未保存也能测）|
+| **外部接入** | 生成/吊销外部接入 key（baseURL + key），含 baseURL 与 SDK 示例、请求数/token 消耗 |
 | **统计** | 实时 KPI（请求/成功/失败/重试/降级/耗时/成功率）、三种真实 Token、24h 趋势图、错误类型分布、Provider/Key 明细、降级事件 |
 | **记录** | 调用日志：按日期/模型/状态码/内容关键词查询，点击展开 **原始请求 + 原始返回（流式精简为内容文本）+ 错误信息** |
 | **账号** | 右上角 ⚙ 修改用户名/密码（需旧密码，改后全部会话失效重新登录）|
@@ -185,6 +230,7 @@ src/balance.js       加权轮询/降级/切回引擎
 src/adapters.js      上游请求/协议转换/usage 提取
 src/stats.js         统计聚合与持久化
 src/requests.js      调用日志(原始请求/返回/错误; 大文件流式读取)
+src/keys.js          外部接入 key(HMAC 哈希存储 + 校验 + 创建/吊销)
 src/auth.js          登录/会话/改密
 web/                 Web 面板(纯静态)
 test/                单元测试 + mock 上游
@@ -195,7 +241,7 @@ deploy-docker.sh     Docker 一键部署
 ## 🧪 测试
 
 ```bash
-npm test              # 权重轮询/冷却/降级单元测试(25 例)
+npm test              # 权重轮询/冷却/降级 + 外部接入 key 单元测试(86 断言)
 # 本地 mock 集成: node test/mock-upstream.js + mock-anthropic.js,再 curl 验证
 ```
 

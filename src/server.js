@@ -9,6 +9,7 @@ const path = require('path');
 const config = require('./config');
 const stats = require('./stats');
 const requests = require('./requests');
+const keys = require('./keys');
 const PKG = require('../package.json');
 const { handleChat, handleModels, json, startTime } = require('./proxy');
 const { handleApi, adminOk } = require('./api');
@@ -17,6 +18,20 @@ const MAX_BODY = 32 * 1024 * 1024; // 请求体上限 32MB(防内存滥用) — 
 const PORT = parseInt(process.env.PROXY_PORT || '8787', 10);
 const BIND_HOST = process.env.BIND_HOST || '127.0.0.1'; // 本地默认仅回环;Docker 设 0.0.0.0
 const WEB_DIR = path.join(__dirname, '..', 'web');
+
+/* ---------------- 外部接入 key(baseURL + key) ----------------
+ * /v1/* 需携带 Authorization: Bearer <key> 或 x-api-key: <key>。
+ * 只要 keys.json 里存在任意有效 key 就强制校验(fail closed);
+ * 一个都没建 = 开放模式(旧的仅内网自用行为),启动会打警告。
+ */
+function extractKey(req) {
+  const h = req.headers;
+  const b = h['authorization'];
+  if (typeof b === 'string' && /^bearer\s+\S/i.test(b)) return b.replace(/^bearer\s+/i, '').trim();
+  const x = h['x-api-key'];
+  if (typeof x === 'string' && x.trim()) return x.trim();
+  return '';
+}
 
 /* ---------------- 静态 Web ---------------- */
 
@@ -44,13 +59,29 @@ const server = http.createServer((req, res) => {
 
   const run = async () => {
     if (pathname.startsWith('/api/')) return handleApi(req, res, pathname, req.method);
+    if (pathname.startsWith('/v1/')) {
+      // 外部接入鉴权:baseURL + key。放在 try 之前拦截,失败不产生任何上游流量
+      if (keys.isEnforced()) {
+        const presented = extractKey(req);
+        const rec = keys.verify(presented);
+        if (!rec) {
+          const code = presented ? 'invalid_api_key' : 'missing_api_key';
+          const msg = presented ? 'invalid api key' : 'missing api key';
+          return json(res, 401, { error: { message: msg, type: 'authentication_error', code } });
+        }
+        req.ingressKey = rec; // 记录入口 key(供调用日志区分外部客户端)
+      }
+    }
     if (pathname === '/health' || pathname === '/healthz') {
       const cfg = config.load();
+      const ks = keys.summary();
       return json(res, 200, {
         status: 'ok', version: PKG.version, uptime: Math.floor((Date.now() - startTime) / 1000),
         providers: cfg.providers.length,
         totalModels: cfg.providers.reduce((n, p) => n + p.models.length, 0),
         totalKeys: cfg.providers.reduce((n, p) => n + (Array.isArray(p.keys) && p.keys.length ? p.keys.length : new Set(p.models.flatMap((m) => m.keys)).size), 0),
+        ingress: { enforced: ks.enforced, active: ks.active, revoked: ks.revoked, totalReqs: ks.totalReqs, totalTokens: ks.totalTokens },
+        ingressMode: ks.enforced ? 'key-required' : 'open',
         providers_detail: cfg.providers.map((p) => ({ name: p.name, apiType: p.apiType, models: p.models.map((m) => ({ id: m.id, weight: m.weight, keys: m.keys.length })) })),
       });
     }
@@ -100,8 +131,14 @@ function start() {
   setInterval(() => requests.cleanup(), 24 * 3600 * 1000).unref();
   server.listen(PORT, BIND_HOST, () => {
     const cfg = config.load();
-    console.log(`[easy-llm-proxy] http://127.0.0.1:${PORT} | providers: ${cfg.providers.length} | models: ${cfg.providers.reduce((n, p) => n + p.models.length, 0)} | keys: ${cfg.providers.reduce((n, p) => n + p.models.reduce((x, m) => x + m.keys.length, 0), 0)}`);
+    console.log(`[easy-llm-proxy] http://${BIND_HOST === '0.0.0.0' ? '127.0.0.1' : BIND_HOST}:${PORT} | providers: ${cfg.providers.length} | models: ${cfg.providers.reduce((n, p) => n + p.models.length, 0)} | keys: ${cfg.providers.reduce((n, p) => n + p.models.reduce((x, m) => x + m.keys.length, 0), 0)}`);
     console.log(`[easy-llm-proxy] Web 管理: http://127.0.0.1:${PORT}/ | 配置: ${config.CONFIG_FILE}`);
+    const ks = keys.summary();
+    if (ks.enforced) {
+      console.log(`[easy-llm-proxy] 外部接入: key 校验已开启(有效 ${ks.active} 个 / 累计请求 ${ks.totalReqs}) | baseURL https://<域名>/v1 | key 存储 ${ks.storeFile}`);
+    } else {
+      console.warn(`[easy-llm-proxy] ⚠ /v1 开放模式(未创建任何接入 key,任何可达 /v1 的请求都会被转发)。公网部署请先在面板「外部接入」或 POST /api/keys 创建 key;创建后强制状态会持久化,吊销全部 key 也不会退回开放`);
+    }
   });
   return server;
 }

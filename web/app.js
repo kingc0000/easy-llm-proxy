@@ -49,6 +49,7 @@ $$('.tab').forEach((t) => t.addEventListener('click', () => {
   show(t.dataset.tab);
   if (t.dataset.tab === 'stats') loadStats();
   if (t.dataset.tab === 'requests') { loadRequestDates(); loadRequests(); }
+  if (t.dataset.tab === 'keys') loadKeys();
 }));
 
 /* ---------- 健康 ---------- */
@@ -702,6 +703,136 @@ function maybeNeedToken(e) {
   if (e && e.needToken) { showLogin('请先登录(会话已过期或未登录)'); return true; }
   return false;
 }
+
+/* ---------- 外部接入 Key(baseURL + key) ---------- */
+let _newKey = null;   // 刚创建的 key 明文(只显示一次)
+
+const baseOf = () => location.origin.replace(/\/+$/, '') + '/v1';
+
+/** 相对时间:刚创建 / 5 分钟前 / 2 小时前 / 日期 */
+function fmtAgo(ts) {
+  if (!ts) return '-';
+  const d = Date.now() - Number(ts);
+  if (d < 0) return new Date(ts).toLocaleString();
+  const m = Math.floor(d / 60000), h = Math.floor(d / 3600000), day = Math.floor(d / 86400000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return m + ' 分钟前';
+  if (h < 24) return h + ' 小时前';
+  if (day < 30) return day + ' 天前';
+  return new Date(ts).toLocaleDateString();
+}
+
+async function loadKeys() {
+  const base = baseOf();
+  $('#k-base').value = base;
+  $('#ex-curl').textContent = `curl ${base}/chat/completions -H "Authorization: Bearer sk-elp-..." -H "Content-Type: application/json" -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`;
+  $('#ex-py').textContent = `openai = OpenAI(base_url="${base}", api_key="sk-elp-...")`;
+  $('#ex-anth').textContent = `anthropic = Anthropic(base_url="${base}", api_key="sk-elp-...")`;
+  try {
+    const j = await api('/api/keys');
+    const on = !!j.enforced;
+    const m = $('#keys-mode');
+    m.textContent = on
+      ? '✅ Key 校验已开启：仅持 key 可调用 /v1'
+      : '⚠️ 开放模式：未创建任何 key，任何可达 /v1 的请求都会被转发';
+    m.className = 'req-desc ' + (on ? 'keys-mode-on' : 'keys-mode-open');
+    renderKeysTable(j.keys || []);
+  } catch (e) {
+    if (!maybeNeedToken(e)) renderKeysTable([], String(e.message));
+  }
+}
+
+function renderKeysTable(list, errMsg) {
+  const tb = $('#keys-table tbody');
+  if (errMsg) { tb.innerHTML = `<tr><td colspan="7" class="empty err">加载失败：${esc(errMsg)}</td></tr>`; return; }
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">还没有接入 Key。创建后外部客户端即可用 baseURL + key 调用</td></tr>';
+    return;
+  }
+  tb.innerHTML = list.map((k) => `<tr class="k-row">
+    <td class="key-name">${esc(k.name)}</td>
+    <td><code>${esc(k.prefix || '')}</code>${k.revoked ? ' <span class="hint">已吊销</span>' : ''}</td>
+    <td>${esc(k.created ? new Date(k.created).toLocaleString() : '-')}</td>
+    <td>${k.revoked ? '-' : fmtAgo(k.lastUsed)}</td>
+    <td>${k.reqs || 0}</td>
+    <td>${k.tokens || 0}</td>
+    <td>${k.revoked ? '<span class="hint">已失效</span>' : `<button class="btn small ghost k-revoke" data-id="${esc(k.id)}" data-name="${esc(k.name)}">吊销</button>`}</td>
+  </tr>`).join('');
+}
+
+$('#btn-create-key') && $('#btn-create-key').addEventListener('click', () => {
+  $('#key-form-msg').textContent = ''; $('#key-form-msg').className = 'msg';
+  $('#key-new').classList.add('hidden');
+  $('#key-form').classList.remove('hidden');
+  $('#key-modal-title').textContent = '创建接入 Key';
+  $('#f-key-name').value = '';
+  $('#key-modal').classList.remove('hidden');
+  setTimeout(() => $('#f-key-name').focus(), 30);
+});
+$('#btn-key-cancel') && $('#btn-key-cancel').addEventListener('click', () => $('#key-modal').classList.add('hidden'));
+$('#btn-key-done') && $('#btn-key-done').addEventListener('click', () => $('#key-modal').classList.add('hidden'));
+
+$('#key-form') && $('#key-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = $('#f-key-name').value.trim();
+  if (!name) { $('#key-form-msg').textContent = '请填写名称'; $('#key-form-msg').className = 'msg err'; return; }
+  const btn = $('#key-form button[type=submit]');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/keys', { method: 'POST', body: JSON.stringify({ name }) });
+    _newKey = r.key;
+    $('#key-new-value').value = r.key;
+    $('#key-new').classList.remove('hidden');
+    $('#key-form').classList.add('hidden');
+    loadKeys();
+  } catch (err) {
+    if (maybeNeedToken(err)) return;
+    $('#key-form-msg').textContent = err.message;
+    $('#key-form-msg').className = 'msg err';
+  } finally { btn.disabled = false; }
+});
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* 回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
+$('#btn-copy-base') && $('#btn-copy-base').addEventListener('click', async () => {
+  const ok = await copyText(baseOf());
+  msg(ok ? '已复制 baseURL' : '复制失败，请手动选择复制', !ok);
+});
+$('#btn-key-copy') && $('#btn-key-copy').addEventListener('click', async () => {
+  const ok = await copyText(_newKey || $('#key-new-value').value);
+  $('#key-new-msg').textContent = ok ? '✅ 已复制' : '复制失败，请手动选择复制';
+  $('#key-new-msg').className = 'msg ' + (ok ? 'ok' : 'err');
+});
+
+$('#keys-table tbody') && $('#keys-table tbody').addEventListener('click', async (e) => {
+  const b = e.target.closest('.k-revoke');
+  if (!b) return;
+  if (!confirm(`确定吊销「${b.dataset.name}」？外部客户端将立即失效。`)) return;
+  b.disabled = true;
+  try {
+    await api('/api/keys/' + b.dataset.id, { method: 'DELETE' });
+    msg('已吊销');
+    loadKeys();
+  } catch (err) {
+    if (maybeNeedToken(err)) return;
+    msg(err.message, true);
+    b.disabled = false;
+  }
+});
 
 /* ---------- 启动 ---------- */
 loadHealth();

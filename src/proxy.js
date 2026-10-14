@@ -11,6 +11,7 @@ const balance = require('./balance');
 const stats = require('./stats');
 const ad = require('./adapters');
 const requests = require('./requests');
+const keys = require('./keys');
 
 const startTime = Date.now();
 
@@ -98,6 +99,8 @@ async function handleChat(req, res, pathname, method, body, pick) {
     model: requestedModel, usedModel: null, key: null,
     status: null, ms: 0, attempts: 0, degraded: false, error: null,
     promptTokens: 0, cachedTokens: 0, completionTokens: 0,
+    ingressKey: (req && req.ingressKey && req.ingressKey.name) || null, // 外部接入 key 名称(区分客户端;开放模式为 null)
+    ingressKeyId: (req && req.ingressKey && req.ingressKey.id) || null,
     req: parsed, res: null, resChunks: [], sseText: null, sseLen: 0, truncated: false, logged: false,
   };
 
@@ -260,6 +263,10 @@ function finalizeRec(rec) {
   else if (rec.resChunks && rec.resChunks.length) rec.res = Buffer.concat(rec.resChunks).toString('utf8');
   if (rec.res && rec.res.length > requests.MAX_REC) { rec.truncated = true; rec.res = rec.res.slice(0, requests.MAX_REC); }
   try { if (rec.req && JSON.stringify(rec.req).length > requests.MAX_REQ) { rec.reqTruncated = true; rec.req = null; } } catch { rec.req = null; }
+  // 外部接入 key 的 token 消耗累计(prompt+completion,按首次记录值计)
+  try {
+    if (rec.ingressKeyId) keys.touch(rec.ingressKeyId, (rec.promptTokens || 0) + (rec.completionTokens || 0));
+  } catch { /* 计数失败不影响日志落盘 */ }
   delete rec.resChunks;
   return rec;
 }

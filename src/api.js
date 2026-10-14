@@ -9,6 +9,7 @@ const auth = require('./auth');
 const config = require('./config');
 const stats = require('./stats');
 const requests = require('./requests');
+const keys = require('./keys');
 const ad = require('./adapters');
 const { json, shortKey, states, startTime } = require('./proxy');
 
@@ -143,6 +144,25 @@ async function handleApi(req, res, pathname, method) {
     config.save(payload);
     states.clear();
     return json(res, 200, { ok: true });
+  }
+
+  // 外部接入 key(baseURL + key): 创建时明文仅返回一次,此后只存哈希,列表脱敏展示
+  const km = pathname.match(/^\/api\/keys(?:\/([\w-]+))?$/);
+  if (km) {
+    if (method === 'GET' && !km[1]) return json(res, 200, { enforced: keys.isEnforced(), keys: keys.list() });
+    if (method === 'POST' && !km[1]) {
+      const name = (payload && typeof payload.name === 'string' ? payload.name : '').trim();
+      if (!name) return json(res, 400, { error: { message: 'name 必填' } });
+      const r = keys.create(name);
+      if (!r.ok) return json(res, 409, { error: { message: r.message } });
+      return json(res, 200, r);
+    }
+    if (method === 'DELETE' && km[1]) {
+      const r = keys.revoke(km[1]);
+      if (!r.ok) return json(res, r.reason === 'not_found' ? 404 : 409, { error: { message: r.message } });
+      return json(res, 200, r);
+    }
+    return json(res, 404, { error: { message: 'not found' } });
   }
   if (m) {
     let name;

@@ -7,3 +7,4 @@ auth.json
 *.token
 *.key
 *.enc
+test/.tmp-keys-test/
