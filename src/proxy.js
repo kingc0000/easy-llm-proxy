@@ -184,19 +184,21 @@ async function handleChat(req, res, pathname, method, body, pick) {
     balance.advanceKey(st, c.modelId, c.key); // 失败 key 进入冷却期 → 冷却期内该候选跳过,过期后重新可用
     console.log(`[proxy] ${method} ${pathname} -> ${result.status || 'ERR'} | ${provider.name}/${c.modelId} key ${shortKey(c.key)} (${d.reason}) 尝试 ${attempts}/${cap}`);
 
-    // retry: 该 model 的 key 已耗尽 → 记降级态(影响后续请求);不重排,继续消费静态计划里
-    //        已铺好的 [主, 备2, 主(重试), 备3, …] 降级链(passThrough 模式不跨 model 降级,直接耗尽)
+    // retry: 该 model 的 key 已耗尽 → 降级/回主决策(per-key: 主未冷却→回主;主仍冷却→下探一层)
+    //        然后重排计划继续尝试(passThrough 模式不跨 model 降级,直接耗尽)
     const remainingOfModel = planList.slice(planIdx).filter((x) => x.modelId === c.modelId).length;
     if (remainingOfModel === 0) {
       if (passThrough) break; // 未配置的 model 只换 key,不降级(保持 v1 行为)
       const modelKeys = [...new Set(planList.filter((x) => x.modelId === c.modelId).map((x) => x.key))];
       const dg = balance.degrade(provider, st, c.modelId, modelKeys);
       stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: dg.toModel, key: modelKeys.join(' '), reason: d.reason });
-      if (!dg.toModel && dg.cleared > 0) { // 最低权重也失败 → 兜底回主(也记恢复事件)
-        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '最低权重也失败 回主重试' });
+      if (!dg.toModel && dg.cleared > 0) { // 主已过冷却 → 回主(记恢复事件)
+        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '主 model 已过冷却期 回主重试' });
       }
       degradeCount++;
-      if (degradeCount > provider.models.length * 2 + 2) break; // 兜底防无限降级
+      planList = rePlan(requestedModel);
+      planIdx = 0;
+      if (degradeCount > provider.models.length + 2) break; // 兜底防无限降级
     }
   }
 

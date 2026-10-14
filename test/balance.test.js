@@ -57,18 +57,22 @@ module.exports = async () => {
   t('降级 model 成功 1 次(usageLimit=1)后 → 切回主 model', () => {
     const limP = provider(P.models.map((m) => ({ ...m, usageLimit: m.id === 'm99' ? 1 : null })));
     const st = bal.newState();
-    bal.degrade(limP, st, 'm100', ['k100a', 'k100b']);
+    bal.advanceKey(st, 'm100', 'k100a'); // 失败先进冷却
+    bal.advanceKey(st, 'm100', 'k100b');
+    bal.degrade(limP, st, 'm100', ['k100a', 'k100b']); // 主冷却中 → 降级 m99
     bal.report(limP, st, 'm99', 'k100a', true); // 成功 1 → 达标
+    st.failAt.set('m100\u0000k100a', Date.now() - 61 * 1000); // 主已过冷却
     const p = bal.plan(limP, st, 'm100');
-    assert.strictEqual(p[0].modelId, 'm100'); // k100a 已切回主
-    assert.strictEqual(p[0].key, 'k100a');
+    assert.strictEqual(p.find((c) => c.key === 'k100a').modelId, 'm100'); // 降级期用完+主过冷却 → 回主
   });
 
   t('降级 model 时长到期(useSeconds) → 切回主 model', () => {
     const timeP = provider(P.models.map((m) => ({ ...m, useSeconds: m.id === 'm99' ? 1 : null })));
     const st = bal.newState();
-    bal.degrade(timeP, st, 'm100', ['k100a']);
+    bal.advanceKey(st, 'm100', 'k100a'); // 失败先进冷却
+    bal.degrade(timeP, st, 'm100', ['k100a']); // 主冷却中 → 降级 m99
     st.degraded.get('k100a').since = Date.now() - 2000; // 模拟 2s 过去(限 1s)
+    st.failAt.set('m100\u0000k100a', Date.now() - 61 * 1000); // 主已过冷却
     const p = bal.plan(timeP, st, 'm100');
     assert.strictEqual(p[0].modelId, 'm100');
   });
@@ -90,8 +94,11 @@ module.exports = async () => {
 
   t('最低权重也限流 → 兜底回主 model 重试(循环)', () => {
     const st = bal.newState();
-    bal.degrade(P, st, 'm100', ['k100a']); // → m99
-    bal.degrade(P, st, 'm99', ['k100a']);  // → m97
+    bal.advanceKey(st, 'm100', 'k100a');
+    bal.degrade(P, st, 'm100', ['k100a']); // 主冷却中 → m99
+    bal.advanceKey(st, 'm99', 'k100a');
+    bal.degrade(P, st, 'm99', ['k100a']);  // 主仍冷却 → m97
+    bal.advanceKey(st, 'm97', 'k100a');
     const r = bal.degrade(P, st, 'm97', ['k100a']); // 已是最低 → 清态回主
     assert.strictEqual(r.toModel, null);
     assert.strictEqual(r.cleared, 1);
@@ -103,13 +110,15 @@ module.exports = async () => {
   t('成功计数只算成功返回(失败不计数)', () => {
     const limP = provider(P.models.map((m) => ({ ...m, usageLimit: m.id === 'm99' ? 2 : null })));
     const st = bal.newState();
-    bal.degrade(limP, st, 'm100', ['k100a']);
+    bal.advanceKey(st, 'm100', 'k100a'); // 主对该 key 冷却中
+    bal.degrade(limP, st, 'm100', ['k100a']);  // → m99
     bal.report(limP, st, 'm99', 'k100a', true);  // 成功 1
     bal.report(limP, st, 'm99', 'k100a', false); // 失败(不计)
     assert.strictEqual(st.degraded.get('k100a').success, 1);
     bal.report(limP, st, 'm99', 'k100a', true);  // 成功 2 → 达标
+    st.failAt.set('m100\u0000k100a', Date.now() - 61 * 1000); // 主已过冷却
     const p = bal.plan(limP, st, 'm100');
-    assert.strictEqual(p[0].modelId, 'm100');
+    assert.strictEqual(p[0].modelId, 'm100'); // 降级期用完+主过冷却 → 回主
   });
 
   t('请求指定 model 时从该 model 开始(所有 key 均从其链起点)', () => {
@@ -122,7 +131,7 @@ module.exports = async () => {
   });
 
   t('maxAttempts 有限值(防死循环)', () => {
-    assert.strictEqual(bal.maxAttempts(P), 42); // ks=6 × models=3 × 2(主穿插重试) + 6
+    assert.strictEqual(bal.maxAttempts(P), 24); // ks=6 × models=3 + 6
   });
 
   t('同权重兄弟 model 均进入尝试序列(不整层跳过)', () => {
@@ -133,7 +142,8 @@ module.exports = async () => {
     ]);
     const st = bal.newState();
     const p = bal.plan(P2, st, 'a');
-    assert.deepStrictEqual(p.map((x) => x.modelId), ['a', 'a', 'a', 'c', 'c', 'c', 'a', 'a', 'a']); // 末尾穿插主层兜底重试
+    assert.deepStrictEqual(p.map((x) => x.modelId), ['a', 'a', 'a', 'c', 'c', 'c']);
+    bal.advanceKey(st, 'a', 'a1'); // 主对该 key 冷却中
     const r = bal.degrade(P2, st, 'a', ['a1']);
     assert.strictEqual(r.toModel, 'b'); // 同权重兄弟优先降级
     assert.strictEqual(st.degraded.get('a1').modelId, 'b');
@@ -201,56 +211,87 @@ module.exports = async () => {
     assert.strictEqual(p3[0].key, 'k99a');
   });
 
-  t('降级链顺序 = [主, 备2, 主(重试), 备3, 主(兜底重试)]', () => {
-    const st = bal.newState();
-    const p = bal.plan(P, st, null);
-    const seq = p.map((c) => c.modelId);
-    // keys=6: 主 ×6, 备2 ×6, 主重试 ×6, 备3 ×6, 主兜底 ×6
-    assert.strictEqual(p.length, 30);
-    assert.ok(seq.slice(0, 6).every((m) => m === 'm100'), '第一段全主');
-    assert.ok(seq.slice(6, 12).every((m) => m === 'm99'), '第二段全备2');
-    assert.ok(seq.slice(12, 18).every((m) => m === 'm100'), '第三段重试主');
-    assert.ok(seq.slice(18, 24).every((m) => m === 'm97'), '第四段备3');
-    assert.ok(seq.slice(24, 30).every((m) => m === 'm100'), '第五段兜底重试主');
-  });
-
-  t('主 model 全 key 限流 → 冷却期间降级用备2;冷却过期立即回主(主要用主)', () => {
+  t('主 model 全 key 限流 → 冷却期间降级用备2(不提前回主)', () => {
     const st = bal.newState();
     const allK = ['k100a', 'k100b', 'k99a', 'k99b', 'k99c', 'k97a'];
     for (const k of allK) bal.advanceKey(st, 'm100', k);
     bal.degrade(P, st, 'm100', allK);
     const p1 = bal.plan(P, st, null);
     assert.ok(!p1.some((c) => c.modelId === 'm100'), '主冷却期内不尝试主');
-    assert.strictEqual(p1[0].modelId, 'm99'); // 主层与重试层为空 → 直接备2
-    // 模拟主 model 冷却过期(默认 60s) → 立即回主重试
+    assert.strictEqual(p1[0].modelId, 'm99'); // 主层为空 → 直接备2
+    // 主 model 冷却过期,但降级期(usageLimit/useSeconds)还没用完 → 仍留在备2,不回主
     for (const k of allK) st.failAt.set('m100\0' + k, Date.now() - 61 * 1000);
     const p2 = bal.plan(P, st, null);
-    assert.strictEqual(p2[0].modelId, 'm100'); // 冷却一过,所有 key 回主
+    assert.strictEqual(p2[0].modelId, 'm99'); // 降级期未用完 → 继续用备2
   });
 
-  t('主 model 成功 → 立即解除该 key 降级(不等 usageLimit/useSeconds)', () => {
+  t('降级期用完且主已过冷却 → 回主;主仍冷却 → 下探到下一 model', () => {
+    const limP = provider(P.models.map((m) => ({ ...m, usageLimit: m.id === 'm99' ? 2 : null })));
+    // 场景 A: 降级期用完 + 主已过冷却 → 回主
+    const stA = bal.newState();
+    bal.advanceKey(stA, 'm100', 'k100a');
+    bal.degrade(limP, stA, 'm100', ['k100a']); // → m99
+    bal.report(limP, stA, 'm99', 'k100a', true); // 成功 1
+    bal.report(limP, stA, 'm99', 'k100a', true); // 成功 2 → 达限
+    stA.failAt.set('m100\0k100a', Date.now() - 61 * 1000); // 主已过冷却
+    const pA = bal.plan(limP, stA, null);
+    assert.strictEqual(pA.find((c) => c.key === 'k100a').modelId, 'm100'); // 回主
+    // 场景 B: 降级期用完 + 主仍在冷却 → 下探到 m97
+    const stB = bal.newState();
+    bal.advanceKey(stB, 'm100', 'k100a');
+    bal.degrade(limP, stB, 'm100', ['k100a']); // → m99
+    bal.report(limP, stB, 'm99', 'k100a', true); // 成功 1
+    bal.report(limP, stB, 'm99', 'k100a', true); // 成功 2 → 达限(主冷却未过期)
+    const pB = bal.plan(limP, stB, null);
+    assert.strictEqual(pB.find((c) => c.key === 'k100a').modelId, 'm97'); // 主仍冷却 → m3
+  });
+
+  t('降级中限流: 主未冷却 → 回主重试;主仍冷却 → 下探下一层', () => {
+    const st = bal.newState();
+    // 场景 A: k100a 降级到 m99,此刻 m99 限流,但主 m100 已过冷却 → 回主
+    bal.advanceKey(st, 'm100', 'k100a');
+    bal.advanceKey(st, 'm100', 'k100b');
+    bal.degrade(P, st, 'm100', ['k100a', 'k100b']); // → m99
+    st.failAt.set('m100\0k100a', Date.now() - 61 * 1000); // 主对该 key 已过冷却
+    bal.advanceKey(st, 'm99', 'k100a'); // m99 限流
+    const dgA = bal.degrade(P, st, 'm99', ['k100a']);
+    assert.ok(!st.degraded.has('k100a'), '主已过冷却 → 清降级回主');
+    assert.ok(st.degraded.has('k100b')); // 另一个 key 主仍冷却 → 保持降级
+    assert.strictEqual(dgA.toModel, null); // 回主路径 toModel=null
+    assert.strictEqual(dgA.cleared, 1);
+    // 场景 B: k100b 的主仍在冷却,m99 限流 → 下探 m97
+    bal.advanceKey(st, 'm99', 'k100b');
+    const dgB = bal.degrade(P, st, 'm99', ['k100b']);
+    assert.strictEqual(st.degraded.get('k100b').modelId, 'm97'); // 主仍冷却 → m3
+    assert.strictEqual(dgB.toModel, 'm97');
+  });
+
+  t('备2 也全限流且主仍冷却 → 落备3;降级期用完且主过冷却 → 回主', () => {
+    const secP = provider(P.models.map((m) => ({ ...m, useSeconds: m.id === 'm97' ? 10 : null })));
+    const st = bal.newState();
+    const allK = ['k100a', 'k100b', 'k99a', 'k99b', 'k99c', 'k97a'];
+    for (const k of allK) { bal.advanceKey(st, 'm100', k); bal.advanceKey(st, 'm99', k); }
+    bal.degrade(secP, st, 'm100', allK);
+    bal.degrade(secP, st, 'm99', allK); // → m97
+    const p1 = bal.plan(secP, st, null);
+    assert.ok(p1.every((c) => c.modelId === 'm97'), '主与备2 都冷却 → 只试备3');
+    // 降级期用完(useSeconds)且主已过冷却 → 回主
+    for (const k of allK) st.degraded.get(k).since = Date.now() - 11 * 1000; // 限 10s,已过
+    for (const k of allK) st.failAt.set('m100\0' + k, Date.now() - 61 * 1000);
+    const p2 = bal.plan(secP, st, null);
+    assert.strictEqual(p2[0].modelId, 'm100'); // 降级期用完 + 主过冷却 → 回主优先
+  });
+
+  t('主 model 成功 → 兜底解除该 key 降级(防御性;正常流程降级 key 不进入主层)', () => {
     const st = bal.newState();
     bal.advanceKey(st, 'm100', 'k100a');
     bal.degrade(P, st, 'm100', ['k100a']);
     assert.ok(st.degraded.has('k100a'));
-    bal.report(P, st, 'm100', 'k100a', true); // 主成功
-    assert.ok(!st.degraded.has('k100a'));     // 降级立即结束
+    bal.report(P, st, 'm100', 'k100a', true); // 主成功(防御路径)
+    assert.ok(!st.degraded.has('k100a'));     // 降级解除
     assert.ok(!st.failAt.has('m100\0k100a')); // 成功解除冷却
     const p = bal.plan(P, st, null);
     assert.strictEqual(p.find((c) => c.key === 'k100a').modelId, 'm100');
-  });
-
-  t('备2 也全限流且主仍冷却 → 落备3;主冷却过期后重新主优先', () => {
-    const st = bal.newState();
-    const allK = ['k100a', 'k100b', 'k99a', 'k99b', 'k99c', 'k97a'];
-    for (const k of allK) { bal.advanceKey(st, 'm100', k); bal.advanceKey(st, 'm99', k); }
-    bal.degrade(P, st, 'm100', allK);
-    bal.degrade(P, st, 'm99', allK); // → m97
-    const p1 = bal.plan(P, st, null);
-    assert.ok(p1.every((c) => c.modelId === 'm97'), '主与备2 都冷却 → 只试备3');
-    for (const k of allK) st.failAt.set('m100\0' + k, Date.now() - 61 * 1000);
-    const p2 = bal.plan(P, st, null);
-    assert.strictEqual(p2[0].modelId, 'm100'); // 主冷却过期 → 重新主优先
   });
 
   console.log(failures ? `\n${failures} 个测试失败` : '\n全部通过');

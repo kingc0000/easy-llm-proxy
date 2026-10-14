@@ -4,10 +4,9 @@
  * 规则:
  *  - 每 provider 多个 model,每个 model 配置 weight(1-100,越大越优先) + keys(多 key)
  *  - 第一权重(主 model): 全部 key 都限流 → 主 model 进入冷却,切到第二权重;第二权重也全部
- *    限流 → 重新尝试主 model(冷却已过则恢复);仍限流 → 第三权重…以此类推。
- *    尝试顺序 = [主, 备2, 主(重试), 备3, 主(重试), …, 备N, 主(兜底重试)],
- *    冷却中的 (model,key) 自动跳过,因此主 model 冷却期内重试层为空、自然落到下一层。
- *    主 model 一旦成功 → 立即解除降级,回到「主要用主 model」的状态。
+ *    限流 → 看主 model 冷却:已过冷却期 → 重新尝试主 model;仍在冷却 → 第三权重…以此类推。
+ *  - 回主由「降级期」gate: 降级 key 先在降级 model 用完 成功次数(usageLimit)/时长(useSeconds)
+ *    任一限制后,才考虑回主 —— 主 model 不在冷却期才回主,若仍在冷却则继续下探一层(如 m2→m3)。
  *  - **per-key 降级状态**: 某层全部 key 失败 → 这些 key 各自记录降级(到下一权重 model);
  *    其他 key 不受影响继续用主 model(单 key 限流不拖累全局)
  *  - 降级 key 在降级 model 使用达到 成功次数(usageLimit) 或 时长(useSeconds) 任一限制后
@@ -96,25 +95,33 @@ function allKeys(p) {
 
 /**
  * 生成尝试计划(候选列表,顺序即尝试顺序)。
- *  1) 先清理到期的 per-key 降级态(次数/时长达标 → 切回主)
- *  2) 每 key 一条链: 默认从主(或请求 model)起;仅当该 key 已降级且主 model 对它仍在冷却时,
- *     才从降级 model 起 —— 即主 model 冷却一过,降级 key 立刻回到主 model 重试(主要用主)
- *  3) 按权重层聚合,并在每层更低权重之间穿插主 model 重试层:
- *     [主, 备2, 主(重试), 备3, 主(重试), …, 备N, 主(兜底重试)]
- *     冷却中的 (model,key) 不进候选 —— 主 model 冷却期内其重试层为空、自动跳过。
- *  4) 连续同权重空层去重,避免无意义的重复尝试
+ *  1) 到期清理降级态(次数/时长达标): 主 model 不在冷却期 → 切回主;
+ *     主 model 仍在冷却 → 下探一层(如 m2→m3,重新起降级期);无更低层 → 清态回主
+ *  2) 每 key 一条链: 降级中从降级 model 起,否则从主(或请求 model)起;链内按权重降序(同权重兄弟)
+ *     → 降级 key 在降级期用完之前一直留在当前降级 model(不因主冷却过期而提前回主)
+ *  3) 按权重层聚合: 最高权重层(所有 key 的主候选) → 下一权重层(所有 key 的链中该层候选) → …
+ *     → "第一权重(全 key)都限流才切第二权重";per-key 独立降级/恢复互不影响
+ *  4) 冷却中的 (model,key) 不进候选(跳过),全冷却则该层为空、自动落到下一层
  */
 function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
 
-  // 1) 到期清理(次数/时长达标 → 切回主);调用方 diff 前后 Map 记 recover 事件
+  // 1) 到期清理(次数/时长达标);调用方 diff 前后 Map 记 recover 事件
   for (const [k, d] of [...st.degraded]) {
-    if (keyDegradedDue(p, d)) st.degraded.delete(k);
+    if (keyDegradedDue(p, d)) {
+      const main = mainModel(p);
+      if (!inCooldown(p, st, main.id, k)) {
+        st.degraded.delete(k); // 降级期用完且主已过冷却 → 回主
+      } else {
+        const nxt = nextLower(p, d.modelId); // 主仍在冷却 → 下探一层
+        if (!nxt) st.degraded.delete(k);     // 已是最低 → 清态回主(主冷却过后再试)
+        else st.degraded.set(k, { modelId: nxt.id, since: Date.now(), success: 0 });
+      }
+    }
   }
 
   const main = mainModel(p);
   const req = requestedId ? modelOf(p, requestedId) : null;
-  const primary = req || main;
 
   // 2) 每 key 链(无兜底: 最低层失败由 degrade 清态回主处理);
   //    key 顺序 = 队列指针轮转一圈:
@@ -129,8 +136,7 @@ function plan(p, st, requestedId) {
   const keys = rotate(p.roundRobin ? st.lastKey : st.lastFail);
   const chainOf = (key) => {
     const d = st.degraded.get(key);
-    // 主 model 对该 key 仍在冷却 → 从降级 model 起;否则回主(冷却一过立即恢复)
-    const start = (d && inCooldown(p, st, primary.id, key)) ? (modelOf(p, d.modelId) || main) : primary;
+    const start = d ? (modelOf(p, d.modelId) || main) : (req || main);
     const seq = [];
     const seen = new Set();
     const add = (m) => { if (m && !seen.has(m.id)) { seen.add(m.id); seq.push(m); } };
@@ -146,28 +152,14 @@ function plan(p, st, requestedId) {
     return seq;
   };
 
-  // 3) 层顺序 = 每层更低权重之间穿插主 model 重试,末尾再兜一次主:
-  //    [w1, w2, w1, w3, w1, …, wn, w1]
+  // 3) 按权重层聚合(层降序 × key 依序)
   const weights = [...new Set(sorted.map((m) => m.weight))].sort((a, b) => b - a);
-  const pw = primary.weight;
-  const order = [];
-  for (let i = 0; i < weights.length; i++) {
-    order.push(weights[i]);
-    if (weights[i] !== pw && i < weights.length - 1) order.push(pw); // 每层之间重试主
-  }
-  if (order.length && order[order.length - 1] !== pw) order.push(pw); // 末尾兜底重试主
-
-  // 4) 按层聚合(层顺序 × key 依序);空层跳过;连续同层(中间层全空)去重
   const out = [];
-  let lastW = null;
-  for (const w of order) {
-    if (w === lastW) continue;
-    let added = 0;
+  for (const w of weights) {
     for (const key of keys) {
       const mAtW = chainOf(key).find((m) => m.weight === w);
-      if (mAtW && !inCooldown(p, st, mAtW.id, key)) { out.push({ modelId: mAtW.id, key }); added++; }
+      if (mAtW && !inCooldown(p, st, mAtW.id, key)) out.push({ modelId: mAtW.id, key });
     }
-    if (added) lastW = w;
   }
   return out;
 }
@@ -179,9 +171,9 @@ function advanceKey(st, modelId, key) {
   st.lastFail = key;
 }
 
-/** 结果回报: 降级期间某 key 的 2xx 成功计数(达 usageLimit 到期回主);
+/** 结果回报: 降级期间某 key 的 2xx 成功计数(达 usageLimit 到期考虑回主);
  *  平均轮询模式下成功时记 lastKey(下次请求轮转起点)。
- *  成功即解除该 (model,key) 的冷却;主 model 成功 → 立即解除该 key 的降级(主要用主)。 */
+ *  成功即解除该 (model,key) 的冷却;主 model 成功 → 兜底解除该 key 的降级(防御性,正常流程降级 key 不会在主层出现)。 */
 function report(p, st, modelId, key, ok) {
   if (!ok) return;
   st.failAt.delete(modelId + '\0' + key);
@@ -192,27 +184,36 @@ function report(p, st, modelId, key, ok) {
 }
 
 /**
- * 某权重层的全部 key 都尝试失败(proxy 判定) → per-key 设置/更新降级态到下一权重。
- *  - 有更低权重: keys 全部降级到 nextLower(更深链式降级)
- *  - 已是最低权重: 清除这些 keys 的降级态(回主,下次从主重试)
- * 返回 { toModel } 供事件记录。
+ * 某权重层的全部 key 都尝试失败(proxy 判定) → per-key 决策(回主 or 下探):
+ *  - 主 model 对该 key 不在冷却期 → 清除降级态回主(重新尝试主 model)
+ *  - 主 model 仍在冷却期 → 降级到当前所在 model 的下一权重(更深链式降级,m2→m3),
+ *    重新起降级期;已是最低权重 → 清态回主(主冷却过再试)
+ * 返回 { toModel, cleared } 供事件记录。
  */
 function degrade(p, st, failedModelId, keys) {
-  const lower = nextLower(p, failedModelId);
-  if (!lower) {
-    // 已是最低权重 → 清除这些 keys 的降级态(兜底回主,下次从主重试);cleared 供恢复事件
-    let cleared = 0;
-    for (const k of keys) { if (st.degraded.delete(k)) cleared++; }
-    return { toModel: null, cleared };
+  const main = mainModel(p);
+  let toModel = null;
+  let cleared = 0;
+  for (const k of keys) {
+    if (!inCooldown(p, st, main.id, k)) {
+      // 主 model 已过冷却期 → 回主重试(达限触发: 次数/时长/限流任一)
+      if (st.degraded.delete(k)) cleared++;
+      continue;
+    }
+    // 主 model 仍在冷却 → 从当前所在 model 下探一层
+    const cur = st.degraded.has(k) ? st.degraded.get(k).modelId : failedModelId;
+    const nxt = nextLower(p, cur);
+    if (!nxt) { if (st.degraded.delete(k)) cleared++; continue; } // 已是最低 → 清态回主
+    st.degraded.set(k, { modelId: nxt.id, since: Date.now(), success: 0 });
+    toModel = toModel || nxt.id;
   }
-  for (const k of keys) st.degraded.set(k, { modelId: lower.id, since: Date.now(), success: 0 });
-  return { toModel: lower.id, cleared: 0 };
+  return { toModel, cleared };
 }
 
-/** 总尝试上限(防死循环): 层聚合含主 model 穿插重试,候选最长 ≈ keys × (2×models),留余量 */
+/** 总尝试上限(防死循环): 层聚合候选最长 = keys × models,留余量 */
 function maxAttempts(p) {
   const ks = allKeys(p).length;
-  return ks * p.models.length * 2 + ks;
+  return ks * p.models.length + ks;
 }
 
 /** 兼容旧调用: 某 key 降级是否到期 */
