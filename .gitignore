@@ -1,7 +1,9 @@
-node_modules/
-*.log
 stats.json
 config/
 config.json
 data/
 .admin_token
+auth.json
+*.token
+*.key
+*.enc
