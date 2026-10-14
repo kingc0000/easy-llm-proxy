@@ -8,6 +8,9 @@ const https = require('https');
 const { Transform } = require('stream');
 
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || '120000', 10);
+// 墙钟总时限(默认 90s): socket timeout 只是空闲超时,流式响应持续吐数据永不触发;
+// 慢上游(如高峰期商汤 3-6 分钟出活)会无限拖住内存 → OOM。此上限强制掐断超长请求。
+const WALL_MS = parseInt(process.env.WALL_MS || '90000', 10);
 const SMALL_READ_LIMIT = 16 * 1024;
 
 /* ---------- 路径 ---------- */
@@ -211,9 +214,17 @@ function attempt(provider, key, path, method, payload) {
     };
     if (payload) opts.headers['Content-Length'] = Buffer.byteLength(payload);
     const reqFn = isHttps ? https.request : http.request;
-    const ureq = reqFn(opts, (ures) => resolve({ status: ures.statusCode, headers: ures.headers, stream: ures, error: null }));
+    let settled = false;
+    const ureq = reqFn(opts, (ures) => { if (settled) return; settled = true; clearTimeout(wallTimer); resolve({ status: ures.statusCode, headers: ures.headers, stream: ures, error: null }); });
     ureq.on('timeout', () => ureq.destroy(Object.assign(new Error('upstream timeout'), { code: 'ETIMEDOUT' })));
-    ureq.on('error', (e) => resolve({ status: 0, headers: {}, stream: null, body: Buffer.alloc(0), error: e }));
+    ureq.on('error', (e) => { if (settled) return; settled = true; clearTimeout(wallTimer); resolve({ status: 0, headers: {}, stream: null, body: Buffer.alloc(0), error: e }); });
+    // 墙钟硬上限: 即使流式持续吐数据,超过 WALL_MS 也强制掐断(防 175-384s 慢请求拖垮内存)
+    const wallTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      ureq.destroy(Object.assign(new Error('upstream wall-clock timeout (' + Math.round(WALL_MS/1000) + 's) exceeded'), { code: 'ETIMEDOUT' }));
+    }, WALL_MS);
+    if (wallTimer.unref) wallTimer.unref();
     if (payload) ureq.write(payload);
     ureq.end();
   });
