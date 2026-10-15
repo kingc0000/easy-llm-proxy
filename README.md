@@ -14,8 +14,8 @@ Agent / 客户端 ──(OpenAI 兼容)──▶ easy-llm-proxy ──▶ OpenAI
 
 | 能力 | 说明 |
 | --- | --- |
-| 🎯 **加权轮询引擎** | 每 provider 可配多 model，model 配置权重(1-100) 与任意数量 key；主 model 限流 → 换下一个 key → **本层所有 key 都达限才整层切 model**（100→99→97…，同权重兄弟优先，不单个 key 提前切）；**切换前先看主 model 冷却**：已过冷却 → 整层重试主；仍在冷却 → 整层下探 |
-| 🔄 **自动切回** | 降级 key 先在降级 model 用完 **成功次数**(usageLimit) / **时长**(useSeconds) 任一限制（次数按 **2xx 成功返回**计），**整层都用完才切**：主已过冷却 → 整层回主；主仍在冷却 → 整层下探一层重开降级期；降级期间主 model 成功 → 立即解除降级（主要用主） |
+| 🎯 **加权轮询引擎** | 每 provider 可配多 model，model 配置权重(1-100) 与任意数量 key；主 model 某 key 限流 → **先换同层下一个 key**，同层全部 key 都失败 → **整层降级到下一权重层**（100→99→97…，同权重兄弟优先）；**非主层全失败 / 达限 → 总是回主重试**（主冷却由候选跳过机制处理，不再下探） |
+| 🔄 **自动切回** | 降级到某 model 后，该 model 组内**所有 key 的成功次数合计**达 `usageLimit`、或组内最早降级时间超 `useSeconds` → **整组回主**（非逐 key 各自判定）；回主后主仍在冷却：备层 `cooldown=0`（无冷却）立即再试备层，冷却期内落到更低层，主恢复后直连主 |
 | 🔑 **多 Key 轮转 + 冷却** | 每 model 多个 key：失败即冷却（冷却粒度 **(model,key)**，因限流多为 model 级）+ **指针轮转**（冷却跳过、过期不抢队首）；可选 **平均轮询** 模式做严格分摊 |
 | 🌐 **协议归一化** | `openai`（默认）与 `anthropic`（原生 `/v1/messages` + `x-api-key`）provider 混用；Anthropic 自动做请求体/非流式/流式 SSE 双向转换，**客户端无感**，全程 OpenAI 兼容 |
 | 🔐 **登录认证** | Web 面板登录页（用户名/密码，scrypt 哈希存储、会话 Token、失败锁定），支持**修改用户名/密码**；管理 API 统一鉴权 |
@@ -123,11 +123,13 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
       "extraHeaders": {},                   // 可选,如 {"anthropic-version":"2023-06-01"}
       "usageLimit": 5,                      // provider 级兜底: model 未显式配置时回退此值(0=不限)
       "useSeconds": 10,                     // 同上: 降级后持续秒数(0=不限)
+      // 达限判定(整组合计): 降级到某 model 后, 该 model 组内所有 key 的成功次数
+      // 合计 ≥ usageLimit、或组内最早降级时间超 useSeconds → 整组回主(非逐 key)
       "roundRobin": false,                  // false=超限轮询(默认,失败才切) | true=平均轮询(每请求轮换)
       "models": [
         { "id": "deepseek-chat", "weight": 100,
-          "cooldown": 30,                   // model 级冷却(秒): 该 model 全部 key 默认
-          "keys": ["sk-主key1", { "key": "sk-主key2", "cooldown": 60 }] },  // 单 key 覆盖冷却
+          "cooldown": 30,                   // model 级冷却(秒): 该 model 全部 key 默认; 0=无冷却
+          "keys": ["sk-主key1", { "key": "sk-主key2", "cooldown": 60 }] },  // 单 key 覆盖冷却; 0=无冷却
         { "id": "qwen-max", "weight": 99,
           "keys": ["sk-备用key"] }
       ]
@@ -145,7 +147,7 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 - 失败（429/5xx/网络错误）的 key 进入**冷却期**并**推进轮转指针**；下次从指针位置按序试，**冷却中的 (model,key) 直接跳过**
 - 冷却粒度是 **(model, key)**：因限流多为 model 级，key1 在 A model 限流后换到 B model 用不受影响
 - 冷却过期只是「重新可用」，**位置仍由指针决定**——要等排它后面的 key 也都限流一圈才回到它，避免刚恢复就抢占队首
-- **冷却时长三层**：全局默认 60s → `model.cooldown` → 单 key `cooldown`；无配置行为与旧版一致
+- **冷却时长三层**：全局默认 60s → `model.cooldown` → 单 key `cooldown`；**`0` = 无冷却**（显式写 0 表示该 model/key 不冷却，回主/降级后立即可重试；无配置回退默认 60s）
 - 某 model 全部 key 都冷却 → 候选自然落到下一权重 model，无需额外配置
 
 **平均轮询（`"roundRobin": true`）**
@@ -153,13 +155,19 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 - 每请求严格轮换到下一个 key（从上次成功 key 的下一个起），失败时冷却/推进语义不变
 - 适合「多个 key 额度均等、想按次严格均摊」的场景；不限流也会轮换
 
-**降级链（整层统一）**
+**降级决策树（2026-10 起按用户约定重写）**
 
-- 某权重层的**全部 key** 都达限（429/5xx/网络错误）→ **整层一起**降级到**更低权重** model（同权重兄弟优先），不跳级、**不单个 key 提前切**
-- **切换前先看主 model 冷却**：主已过冷却期 → 整层回主重试；主仍在冷却 → 整层下探一层（如 备2 → 备3）
-- **回主由降级期 gate**：降级后先在当前 model 用完 **成功次数**(usageLimit) 或 **时长**(useSeconds) 任一限制（次数按 2xx 成功返回计），**整层都用完**才考虑切回——主已过冷却 → 整层回主；主仍在冷却 → 整层下探一层并重开降级期
-- 已是最深权重也失败 → 清降级态回主重做一轮（总尝试数上限防死循环）
-- `weight` 越大越优先（1-100）；同 provider 同 model id 重复配置保留首个
+1. **同层 key 逐个失败才切**：m2 的 k1 失败 → 切 k2 → k3（不提前跳层）
+2. **非主层全失败 / 达限 → 总是回主重试**：m2/m3 层全部 key 失败，或整组合计达 `usageLimit`/`useSeconds` → 清降级态回主 model 重试；**不回走下探**（旧版在主冷却时会下探一层，已废除）
+3. **主全失败 → 降级到下一权重层**：主 model 所有 key 都失败才降级（主→备2→备3…）
+4. **主冷却中**：回主后主仍在冷却期时，主层候选被跳过 → 落到备层——备层 `cooldown=0`（无冷却）立刻再试备层；备层冷却期内继续落更低层
+5. **往复**：备层达限/全失败 → 再次回主，如此循环（总尝试数上限防死循环，`maxAttempts = key数×model数 + key数`）
+6. `weight` 越大越优先（1-100）；同 provider 同 model id 重复配置保留首个
+
+**统计口径（2026-10 修正）**
+
+- `failed/errors` = **所有非成功尝试**（429/5xx/网络超时/4xx 等），与错误分类 `errorTypes` 总数一致；恒有 `requests = ok + failed`，成功率 `ok/requests` 有失败必然 <100% 且与数字对得上（旧版只计"最终失败"，被重试救回的 429 不数失败，导致"失败=0 但成功率<100%"的矛盾，已修复）
+- 每 key 行 `requests` 为上游尝试次数、`ok` 为 2xx 成功、`retries` 为被重试过的失败尝试（与 `failed` 同一次尝试，仅多一个"重试过"维度）
 
 ### 环境变量
 
@@ -221,7 +229,7 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 | --- | --- |
 | **Providers** | 卡片化查看/编辑 Provider、Model、Key、权重、**冷却秒数**；一键测试连接（未保存也能测）|
 | **外部接入** | 生成/吊销外部接入 key（baseURL + key），含 baseURL 与 SDK 示例、请求数/token 消耗 |
-| **统计** | 实时 KPI（请求/成功/失败/重试/降级/耗时/成功率）、三种真实 Token、24h 趋势图、错误类型分布、Provider/Key 明细、降级事件 |
+| **统计** | 实时 KPI（请求/成功/失败/重试/降级/耗时/成功率）、三种真实 Token、24h 趋势图、错误类型分布、Provider/Key 明细、降级事件；**失败 = 所有非成功尝试**（429/5xx/超时等，与错误类型分布一致）|
 | **记录** | 全量调用日志（转发成功 / 上游失败 / **401 鉴权拒绝 / 413 超限** 均记）：按日期/模型/状态码/内容关键词查询，**列表只返回元数据、秒开**，点击行才按字节偏移读取 **原始请求 + 原始返回（流式精简为内容文本）+ 错误信息** |
 | **账号** | 右上角 ⚙ 修改用户名/密码（需旧密码，改后全部会话失效重新登录）|
 
