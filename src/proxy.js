@@ -223,7 +223,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
       return outputOk(res, provider, result, parsed && parsed.stream, parsed && parsed.model, rec);
     }
     if (d.kind === 'final') {
-      stats.bump(provider.name, c.modelId, c.key, 'errors');
+      // 该次尝试失败已在上面 markError 计过 errors(failed), 无需重复 bump
       // 最终失败也回填命中的 model/key/状态, 否则面板无法看出是哪个 key 的 429/5xx
       rec.usedModel = c.modelId; rec.key = shortKey(c.key);
       rec.status = result.status || 0; rec.attempts = attempts; rec.attemptIdx = attempts;
@@ -261,9 +261,10 @@ async function handleChat(req, res, pathname, method, body, pick) {
     rec.status = (lastResult && lastResult.status) || 0;
     rec.attempts = attempts; rec.attemptIdx = attempts; rec.degraded = degradeCount > 0;
   }
-  // 最终失败计 errors(failed=errors 同源);中间重试的 429 只记 errorTypes 不在此计入。
-  // 无 lastC(plan 为空,所有 key 冷却中直接 502)也计 — 归到请求 model 的空 key 行。
-  stats.bump(provider.name, lastC ? lastC.modelId : (rec.model || mainId), lastC ? lastC.key : '', 'errors');
+  // 耗尽: 最后一次尝试失败已在 markError 计过 errors(failed)。
+  // 仅当 plan 为空(所有 key 冷却中, 一次上游尝试都没有)时补计 1 次失败 —
+  // 归到请求 model 的空 key 行, 保证"所有非成功都要对失败计数"。
+  if (!lastC) stats.bump(provider.name, rec.model || mainId, '', 'errors');
   return outputFail(res, provider, lastResult, attempts, rec);
 }
 

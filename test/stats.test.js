@@ -1,6 +1,7 @@
 /**
  * stats.test.js — 统计口径与配置/路径防御回归测试
- *  - failed 计数口径(errors,不叠加 errorTypes 分类,避免 2×errors+retries 双计)
+ *  - failed 计数口径(errors = 所有非成功尝试, 与 errorTypes 分类总数一致;
+ *    用户约定: 所有非成功都要对失败计数, 有失败则成功率必 <100%)
  *  - auth.json hash 格式损坏时 login/update 必须降级返回而非抛异常
  *  - 静态资源路径解析的 WEB_DIR 逃逸防护
  * 运行: node test/run.js
@@ -23,16 +24,15 @@ module.exports = async () => {
   const stats = require('../src/stats');
 
   try {
-    t('failed = errors(最终失败数,不叠加 errorTypes 分类与重试)', () => {
+    t('所有非成功尝试都计 failed: errors 与 errorTypes 分类总数一致', () => {
       stats.reset();
       const [P, M, K] = ['p1', 'm1', 'k1'];
-      // 尝试 1: 重试 → 只记分类与重试,不计 errors
+      // 尝试 1: 429 → 记分类 + errors(用户约定: 所有非成功都要计失败)
       stats.bump(P, M, K, 'requests');
       stats.bump(P, M, K, 'retries');
       stats.markError(P, M, K, '429');
-      // 尝试 2: 最终失败 → 记分类 + errors
+      // 尝试 2: 5xx → 同样计
       stats.bump(P, M, K, 'requests');
-      stats.bump(P, M, K, 'errors');
       stats.markError(P, M, K, '5xx');
       // 尝试 3: 成功
       stats.bump(P, M, K, 'requests');
@@ -41,41 +41,43 @@ module.exports = async () => {
       const s = stats.summary().summary;
       assert.strictEqual(s.ok, 1, '成功 1 次');
       assert.strictEqual(s.retries, 1, '重试 1 次');
-      assert.strictEqual(s.errors, 1, '最终失败 1 次');
-      assert.strictEqual(s.failed, 1, 'failed 应等于 errors(修复前为 errors+errSum=3)');
-      assert.strictEqual((s.errorTypes['429'] || 0) + (s.errorTypes['5xx'] || 0), 2,
-        'errorTypes 保留全部分类(含重试),与 failed 不重复');
+      assert.strictEqual(s.errors, 2, '非成功 2 次(429+5xx)都计失败');
+      assert.strictEqual(s.failed, 2, 'failed = errors = 所有非成功尝试数');
+      assert.strictEqual(s.errorTypes['429'], 1, '分类 429 = 1');
+      assert.strictEqual(s.errorTypes['5xx'], 1, '分类 5xx = 1');
+      // requests = ok + errors, 成功率对得上
+      assert.strictEqual(s.requests, 3, 'requests = 尝试总数');
     });
 
-    t('provider/model 层级 failed 同步取 errors(不叠加分类)', () => {
+    t('provider/model 层级 failed 同步取 errors(与分类总数一致)', () => {
       stats.reset();
       const [P, M, K] = ['p2', 'm2', 'k2'];
       stats.bump(P, M, K, 'requests');
-      stats.bump(P, M, K, 'errors');
       stats.markError(P, M, K, '429');
-      stats.markError(P, M, K, '429'); // 分类累加两次
+      stats.markError(P, M, K, '429'); // 分类累加两次 → errors 也两次
       stats.bump(P, M, K, 'requests');
       stats.bump(P, M, K, 'ok');
 
       const r = stats.summary();
       assert.strictEqual(r.byProvider.length, 1);
       const p = r.byProvider[0];
-      assert.strictEqual(p.failed, 1, 'provider failed = errors=1(修复前为 errors+errSum=3)');
+      assert.strictEqual(p.failed, 2, 'provider failed = 2 次非成功');
       const m = [...p.models.values()][0];
-      assert.strictEqual(m.failed, 1, 'model failed = errors=1');
+      assert.strictEqual(m.failed, 2, 'model failed = 2 次非成功');
       // 错误分类只在顶层 summary 聚合(provider/model 层级不展开分类),保持既有展示语义
-      assert.strictEqual(r.summary.errorTypes['429'], 2, '顶层 errorTypes 仍累计分类');
+      assert.strictEqual(r.summary.errorTypes['429'], 2, '顶层 errorTypes 累计分类');
+      assert.strictEqual(r.summary.errors, 2, '顶层 errors 与分类一致');
     });
 
     t('snapshot 每 key 行 failed 取 errors', () => {
       stats.reset();
       const [P, M, K] = ['p3', 'm3', 'k3'];
       stats.bump(P, M, K, 'requests');
-      stats.bump(P, M, K, 'errors');
       stats.markError(P, M, K, 'net');
       const row = stats.summary().byKey[0];
       assert.strictEqual(row.failed, 1);
       assert.strictEqual(row.errorTypes.net, 1);
+      assert.strictEqual(row.errors, 1);
     });
   } finally {
     stats.reset();

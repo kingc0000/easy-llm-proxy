@@ -120,11 +120,17 @@ function markTokens(provider, model, key, u) {
   t.completionTokens = (t.completionTokens || 0) + (u.completion || 0);
 }
 
-/** 记录错误分类(type: 429|5xx|net|model|timeout|4xx) */
+/** 记录错误分类(type: 429|5xx|net|model|timeout|4xx)。
+ *  语义(用户约定): **所有非成功尝试都要对失败计数** —— 每次错误同时累加
+ *  errors(=failed)与对应分类, 与 errorTypes 分类总数一致, 成功率=ok/requests
+ *  因此只要有失败, 成功率必 <100% 且对得上。 */
 function markError(provider, model, key, type) {
   const e = keyEntry(provider, model, key);
   e.errorTypes[type] = (e.errorTypes[type] || 0) + 1;
+  e.errors = (e.errors || 0) + 1;
   e.lastSeen = Date.now();
+  const t = trendEntry(ensureHour(provider), provider);
+  t.errors = (t.errors || 0) + 1;
 }
 
 /** 事件日志(内存环形缓冲): {time, type, provider, model, key, detail} */
