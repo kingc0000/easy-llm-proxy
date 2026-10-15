@@ -1,30 +1,32 @@
 /**
- * balance.js — per-key 降级链引擎(easy-llm-proxy 核心)
+ * balance.js — 降级链引擎(easy-llm-proxy 核心)
  *
- * 规则:
- *  - 每 provider 多个 model,每个 model 配置 weight(1-100,越大越优先) + keys(多 key)
- *  - 第一权重(主 model): 全部 key 都限流 → 主 model 进入冷却,切到第二权重;第二权重也全部
- *    限流 → 看主 model 冷却:已过冷却期 → 重新尝试主 model;仍在冷却 → 第三权重…以此类推。
- *  - 回主由「降级期」gate: 降级 key 先在降级 model 用完 成功次数(usageLimit)/时长(useSeconds)
- *    任一限制后,才考虑回主 —— 主 model 不在冷却期才回主,若仍在冷却则继续下探一层(如 m2→m3)。
- *  - **per-key 降级状态**: 某层全部 key 失败 → 这些 key 各自记录降级(到下一权重 model);
- *    其他 key 不受影响继续用主 model(单 key 限流不拖累全局)
- *  - 降级 key 在降级 model 使用达到 成功次数(usageLimit) 或 时长(useSeconds) 任一限制后
- *    **切回主 model 继续轮询**(到期清理);次数 = 成功返回的次数(2xx)
- *  - 回主后若主仍全部限流 → 重新降级到下一权重;最低权重也全失败 → 清态回主(循环)
+ * 决策树(用户约定):
+ *  - 每个请求按权重层生成候选: m1(主,权重最高) 层全部 key → m2 层 → m3 层 → …,
+ *    冷却中的 (model,key) 跳过;某层全冷却 → 该层为空,自动落到下一可用层。
+ *  - 同层 key 逐个尝试(轮转起点见下),层内全失败 / 达 usageLimit 任一条件 → **回主**:
+ *    清除降级态,下轮重新从主 model 层开始。
+ *  - 主 model 全失败 → 降级: key 标记到主 model 的下一权重层(m2);若 m2 也在冷却期,
+ *    层聚合时 m2 层为空 → 自动落到 m3,依此类推(m2 冷却=0 即无冷却,回主后立刻可再试 m2)。
+ *  - 往复: m3 全失败 / 达限 → 回主 → 主全失败 → 看 m2 冷却 → m2 或 m3 → …循环。
+ *  - 关键: **非主层失败总是回主,不检查主冷却**(主冷却由 plan() 的 inCooldown 跳过处理);
+ *    **达限也总是回主**(不再因主冷却未过而下探)。旧实现的"主冷却中→整层下探一层"
+ *    会让 m2 失败后绕开主 model 直接下探 m3,违反本决策树。
+ *  - 降级达限判定 **per-key**: 组内达限的 key 单独回主,不被"从未达限"的 key 阻塞
+ *    (旧实现整组 every 判定,会因某 key 在降级层一直 429 无成功而拖死整组永不回主)。
  *  - 每 model 的 key 池策略(两种,由 provider.roundRobin 选择):
  *    · 超限轮询(默认,roundRobin=false): key 用到限流/失败才切 → 进入冷却期(冷却粒度 (model,key),
- *      因限流多为 model 级);队列指针轮转 + 冷却跳过: 从最近失败 key 的下一个起按序试,冷却中的
- *      (model,key) 跳过;同层全部冷却 → 自动降级到下一权重 model2。
- *      冷却时长三层: 全局 DEFAULT_COOLDOWN_MS → model.cooldown → model.keyCooldowns[key]。
- *    · 平均轮询(roundRobin=true): 每请求严格轮换到下一个 key(平滑分摊),仍按权重层聚合,
- *      失败同样 advanceKey(冷却粒度同上),成功时记录 lastKey 作为下次轮转起点。
+ *      因限流多为 model 级);队列指针从最近失败 key 的下一个起,冷却中的 (model,key) 跳过。
+ *    · 平均轮询(roundRobin=true): 每请求严格轮换到下一个 key(平滑分摊),
+ *      成功时记录 lastKey 作为下次轮转起点。
+ *  - 冷却时长三层: 全局 DEFAULT_COOLDOWN_MS → model.cooldown → model.keyCooldowns[key]。
+ *    **cooldown = 0 表示无冷却**(0 不被当作"未配置";仅缺失/null 才回退全局默认)。
  *
  * 状态(state) 按 provider 持久(内存),跨请求共享:
  *   { degraded: Map<key,{modelId,since,success}>,
  *     failAt: Map<"modelId\0key",timestamp>, lastKey: string|null, lastFail: string|null }
  */
-const DEFAULT_COOLDOWN_MS = 60 * 1000; // 默认冷却期(可被 model.cooldown / key 覆盖)
+const DEFAULT_COOLDOWN_MS = 60 * 1000; // 默认冷却期(可被 model.cooldown / key 覆盖;0=无冷却)
 'use strict';
 
 /** 按权重降序(同权重保持配置顺序) */
@@ -71,12 +73,12 @@ function nextLower(p, modelId) {
   return null;
 }
 
-/** 冷却时长(秒→ms): key 覆盖 → model.cooldown → 全局默认 */
+/** 冷却时长(秒→ms): key 覆盖 → model.cooldown → 全局默认;0 = 无冷却 */
 function cooldownMs(p, modelId, key) {
   const m = modelOf(p, modelId);
   if (m) {
-    if (m.keyCooldowns && Number.isFinite(m.keyCooldowns[key]) && m.keyCooldowns[key] > 0) return m.keyCooldowns[key] * 1000;
-    if (Number.isFinite(m.cooldown) && m.cooldown > 0) return m.cooldown * 1000;
+    if (m.keyCooldowns && Number.isFinite(m.keyCooldowns[key]) && m.keyCooldowns[key] >= 0) return m.keyCooldowns[key] * 1000;
+    if (Number.isFinite(m.cooldown) && m.cooldown >= 0) return m.cooldown * 1000;
   }
   return DEFAULT_COOLDOWN_MS;
 }
@@ -108,9 +110,9 @@ function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
 
   // 1) 到期清理(次数/时长达标);调用方 diff 前后 Map 记 recover 事件
-  //    判定粒度: **per-key** —— 组内达限的 key 单独回主,不再被"从未达限"的
-  //    key 阻塞(修复: 降级 model 上某 key 一直 429 无成功,会拖死整组永不回主,
-  //    导致主 model 在上游恢复后仍被永久跳过)。
+  //    判定粒度: **per-key** —— 组内达限的 key 单独回主,不被"从未达限"的
+  //    key 阻塞;全部达限 → **总是回主**(用户约定: 达限就重新尝试主 model,
+  //    主冷却由下方层聚合的 inCooldown 跳过机制处理,不在此处下探)。
   const main = mainModel(p);
   const groups = new Map(); // 降级目标 modelId → [keys]
   for (const [k, d] of [...st.degraded]) {
@@ -127,16 +129,9 @@ function plan(p, st, requestedId) {
       continue;
     }
 
-    // 全部达限: 整层统一决策(主冷却决定回主/下探)
-    const mainPassed = gkeys.every((k) => !inCooldown(p, st, main.id, k)); // 主是否已过冷却期
-    if (mainPassed) {
-      for (const k of gkeys) st.degraded.delete(k); // 整层回主
-    } else {
-      const nxt = nextLower(p, gModel);              // 主仍冷却 → 整层下探
-      if (!nxt) { for (const k of gkeys) st.degraded.delete(k); continue; } // 无更低 → 清态回主
-      const now = Date.now();
-      for (const k of gkeys) st.degraded.set(k, { modelId: nxt.id, since: now, success: 0 });
-    }
+    // 全部达限 → 整层回主(旧实现在此检查主冷却并可能下探一层,已废除。
+    // 主冷却中时,层聚合会让主层为空并落到下一可用层 —— 即"达限 → 回主")
+    for (const k of gkeys) st.degraded.delete(k);
   }
 
   const req = requestedId ? modelOf(p, requestedId) : null;
@@ -202,28 +197,29 @@ function report(p, st, modelId, key, ok) {
 }
 
 /**
- * 某权重层的全部 key 都尝试失败(proxy 判定,即本层所有 key 都达限) → **整层统一**决策:
- *  - 主 model 已过冷却期 → 本层全部清除降级态回主(重新尝试主 model)
- *  - 主 model 仍在冷却期 → 本层全部降级到当前层的下一权重(更深链式降级,m2→m3),
- *    重新起降级期;已是最低权重 → 清态回主(主冷却过再试)
+ * 某权重层的全部 key 都尝试失败(proxy 判定,即本层所有 key 都耗尽) → 决策:
+ *  - **非主层(如 m2/m3)全失败 → 总是回主**: 清除这些 key 的降级态,
+ *    下轮计划重新从主 model 层开始(主冷却则层为空,自然落到下一可用层 ——
+ *    含"m2 冷却=0 → 回主后立刻可再试 m2 k1")。
+ *  - **主 model 全失败 → 降级**: key 标记降级到主 model 的下一权重层(m2),
+ *    下轮从 m2 层开始(m2 冷却期内层为空 → 层聚合自动落到 m3)。
  * 返回 { toModel, cleared } 供事件记录。
  */
 function degrade(p, st, failedModelId, keys) {
   const main = mainModel(p);
-  // 整层统一判定: 主 model 已过冷却期 = 本层所有 key 的主冷却都已过
-  const mainPassed = keys.every((k) => !inCooldown(p, st, main.id, k));
-  if (mainPassed) {
+  if (failedModelId !== main.id) {
+    // 非主层全失败 → 回主(不检查主冷却;主冷却由 plan 的 inCooldown 跳过处理)
     let cleared = 0;
     for (const k of keys) { if (st.degraded.delete(k)) cleared++; }
     return { toModel: null, cleared };
   }
-  // 主仍在冷却 → 整层下探一层
+  // 主 model 全失败 → 降级到下一权重层
   const lower = nextLower(p, failedModelId);
   let toModel = null;
   let cleared = 0;
   const now = Date.now();
   for (const k of keys) {
-    if (!lower) { if (st.degraded.delete(k)) cleared++; continue; } // 已是最低 → 清态回主
+    if (!lower) { if (st.degraded.delete(k)) cleared++; continue; } // 无更低层 → 清态回主
     st.degraded.set(k, { modelId: lower.id, since: now, success: 0 });
     toModel = toModel || lower.id;
   }
@@ -239,4 +235,4 @@ function maxAttempts(p) {
 /** 兼容旧调用: 某 key 降级是否到期 */
 function degradedDue(p, d) { return keyDegradedDue(p, d); }
 
-module.exports = { modelsSorted, mainModel, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey };
+module.exports = { modelsSorted, mainModel, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey, inCooldown, cooldownMs };

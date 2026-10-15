@@ -57,7 +57,7 @@ function normalizeProvider(p, i) {
       else if (item && typeof item === 'object') {
         value = String(item.value ?? item.key ?? '');
         note = String(item.note ?? '');
-        if (Number.isFinite(item.cooldown) && item.cooldown > 0) cooldown = item.cooldown;
+        if (Number.isFinite(item.cooldown) && item.cooldown >= 0) cooldown = item.cooldown; // 0=无冷却
       }
       value = value.trim();
       if (value && !out.some((k) => k.value === value)) out.push({ value, note, cooldown });
@@ -87,8 +87,8 @@ function normalizeProvider(p, i) {
         weight: clampWeight(m.weight),
         usageLimit: pickLimit(m),
         useSeconds: pickSeconds(m),
-        cooldown: (Number.isFinite(m.cooldown) && m.cooldown > 0) ? m.cooldown : null, // model 级冷却(秒)
-        keyCooldowns, // key 级冷却覆盖(秒)
+        cooldown: (Number.isFinite(m.cooldown) && m.cooldown >= 0) ? m.cooldown : null, // model 级冷却(秒;0=无冷却)
+        keyCooldowns, // key 级冷却覆盖(秒;0=无冷却)
         keys,
       });
     }

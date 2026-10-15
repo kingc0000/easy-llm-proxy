@@ -244,8 +244,8 @@ async function handleChat(req, res, pathname, method, body, pick) {
       const modelKeys = [...new Set(planList.filter((x) => x.modelId === c.modelId).map((x) => x.key))];
       const dg = balance.degrade(provider, st, c.modelId, modelKeys);
       stats.recordEvent({ type: 'degrade', provider: provider.name, model: c.modelId, toModel: dg.toModel, key: modelKeys.join(' '), reason: d.reason });
-      if (!dg.toModel && dg.cleared > 0) { // 主已过冷却 → 回主(记恢复事件)
-        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '主 model 已过冷却期 回主重试' });
+      if (!dg.toModel && dg.cleared > 0) { // 非主层失败 或 达限 → 回主(记恢复事件)
+        stats.recordEvent({ type: 'recover', provider: provider.name, model: c.modelId, key: modelKeys.join(' '), reason: '本层失败 回主 model 重试' });
       }
       degradeCount++;
       planList = rePlan(requestedModel);
