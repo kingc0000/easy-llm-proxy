@@ -8,3 +8,4 @@ auth.json
 *.key
 *.enc
 test/.tmp-keys-test/
+test/.tmp-requests-test/

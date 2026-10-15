@@ -2,7 +2,7 @@
 /* 聚合测试运行器 */
 'use strict';
 (async () => {
-  const files = ['./balance.test.js', './sse.test.js', './keys.test.js'];
+  const files = ['./balance.test.js', './sse.test.js', './keys.test.js', './requests.test.js', './finalize.test.js', './stats.test.js', './config.test.js'];
   let allOk = true;
   for (const f of files) {
     console.log('▶', f);

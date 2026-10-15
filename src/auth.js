@@ -90,7 +90,7 @@ function login(username, pw) {
   const expected = CRED.hash.split(':')[1];
   const actual = hashPassword(pw, salt);
   const okUser = typeof username === 'string' && username === CRED.username;
-  const okPass = expected && crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+  const okPass = expected && expected.length === actual.length && crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
   if (!okUser || !okPass) {
     failCount++;
     if (failCount >= LOCK_FAILS) { lockUntil = now + LOCK_MS; failCount = 0; }
@@ -122,7 +122,7 @@ function update(oldPassword, newUsername, newPassword) {
   const salt = CRED.hash.split(':')[0];
   const expected = CRED.hash.split(':')[1];
   const actual = hashPassword(String(oldPassword || ''), salt);
-  if (!expected || !crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'))) {
+  if (!expected || expected.length !== actual.length || !crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'))) {
     return { ok: false, reason: 'old_password_wrong' };
   }
   let username = CRED.username;

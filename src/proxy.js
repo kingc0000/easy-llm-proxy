@@ -35,6 +35,43 @@ function shortKey(key) {
   return key.slice(0, 8) + '…' + key.slice(-4);
 }
 
+/** 调用追踪 id: 关联同一次客户端调用的全部上游尝试(含被重试掉的 429/5xx) */
+function traceId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+/** 记录一次被重试的上游尝试为独立日志行(保留全部调用记录, 含 429 限流)。
+ *  不携带请求正文(最终记录已含完整 req/res, 避免大请求体在每次重试时重复写盘),
+ *  只保留候选 model/key、状态码、上游错误片段与本次耗时; ms 预设为本次尝试耗时。 */
+function logAttempt(parent, c, result, d, idx, t0) {
+  let res = null;
+  try {
+    if (result && result.body) {
+      res = result.body.toString('utf8').slice(0, 1024);
+      if (result.body.length > 1024) res += '\n…[truncated]';
+    }
+  } catch {}
+  const ar = {
+    t: parent.t, provider: parent.provider, apiType: parent.apiType,
+    model: parent.model, usedModel: c.modelId, key: shortKey(c.key),
+    path: parent.path, method: parent.method,
+    status: (result && result.status) || 0,
+    ms: Date.now() - t0,
+    attempts: idx, attemptIdx: idx, final: false, degraded: parent.degraded,
+    error: (result && result.status)
+      ? `upstream responded ${result.status}`
+      : `network: ${(result && result.error && result.error.message) || 'unknown'}`,
+    reason: d.reason,
+    ingressKey: parent.ingressKey, ingressKeyId: parent.ingressKeyId,
+    traceId: parent.traceId,
+    promptTokens: 0, cachedTokens: 0, completionTokens: 0,
+    req: null, res, bodyBytes: 0, logged: false,
+  };
+  const out = finalizeRec(ar);
+  requests.log(out);
+  return out;   // 便于测试断言
+}
+
 /* ---------------- chat 处理(权重引擎) ---------------- */
 
 /**
@@ -92,16 +129,21 @@ async function handleChat(req, res, pathname, method, body, pick) {
   let planIdx = 0;
   let degradeCount = 0;
   let lastResult = null;
+  let lastC = null;   // 最后一次尝试的候选(耗尽时回填 usedModel/key 用)
 
   // 调用日志记录(原始请求/原始返回/错误;流式响应按 chunks 累积,结束时落盘)
+  // traceId 关联同一次客户端调用的全部尝试(含被重试的 429/5xx),final=true 为该调用的最终记录
   const rec = {
     t: Date.now(), provider: provider.name, apiType: provider.apiType,
     model: requestedModel, usedModel: null, key: null,
+    path: pathname, method,
     status: null, ms: 0, attempts: 0, degraded: false, error: null,
     promptTokens: 0, cachedTokens: 0, completionTokens: 0,
+    traceId: traceId(), attemptIdx: 0, final: true,
     ingressKey: (req && req.ingressKey && req.ingressKey.name) || null, // 外部接入 key 名称(区分客户端;开放模式为 null)
     ingressKeyId: (req && req.ingressKey && req.ingressKey.id) || null,
     req: parsed, res: null, resChunks: [], sseText: null, sseLen: 0, truncated: false, logged: false,
+    bodyBytes: (body && body.length) || 0,   // 上游原始请求体字节数(供 reqSize 直接使用,免一次整对象序列化)
   };
 
   while (attempts < cap) {
@@ -109,6 +151,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
     if (!c) break;
     planIdx++;
     attempts++;
+    lastC = c;
 
     // 构造本次尝试的上游请求(降级切换改写 model + anthropic body 转换)
     const { upPath, upPayload } = prepUpstream(provider, pathname, body, c, requestedModel, passThrough);
@@ -125,7 +168,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
     if (d.kind === 'ok') {
       const ok = stats.bump(provider.name, c.modelId, c.key, 'ok');
       rec.usedModel = c.modelId; rec.key = shortKey(c.key); rec.status = result.status;
-      rec.degraded = degradeCount > 0; rec.attempts = attempts;
+      rec.degraded = degradeCount > 0; rec.attempts = attempts; rec.attemptIdx = attempts;
       if (result.stream) {
         // 输出字节统计 + 真实 token(usage 滑动窗口: 覆盖 openai/anthropic 流式 SSE 与非流式 JSON)
         let win = Buffer.alloc(0);
@@ -181,11 +224,17 @@ async function handleChat(req, res, pathname, method, body, pick) {
     }
     if (d.kind === 'final') {
       stats.bump(provider.name, c.modelId, c.key, 'errors');
+      // 最终失败也回填命中的 model/key/状态, 否则面板无法看出是哪个 key 的 429/5xx
+      rec.usedModel = c.modelId; rec.key = shortKey(c.key);
+      rec.status = result.status || 0; rec.attempts = attempts; rec.attemptIdx = attempts;
+      rec.degraded = degradeCount > 0;
       return outputFail(res, provider, result, 0, rec);
     }
     stats.bump(provider.name, c.modelId, c.key, 'retries');
     balance.advanceKey(st, c.modelId, c.key); // 失败 key 进入冷却期 → 冷却期内该候选跳过,过期后重新可用
     console.log(`[proxy] ${method} ${pathname} -> ${result.status || 'ERR'} | ${provider.name}/${c.modelId} key ${shortKey(c.key)} (${d.reason}) 尝试 ${attempts}/${cap}`);
+    // 被重试掉的尝试(429/5xx/超时)也单独落一条日志: 每次上游调用都有据可查, 不再只留最终结果
+    logAttempt(rec, c, result, d, attempts, t0);
 
     // retry: 该 model 的 key 已耗尽 → 降级/回主决策(per-key: 主未冷却→回主;主仍冷却→下探一层)
     //        然后重排计划继续尝试(passThrough 模式不跨 model 降级,直接耗尽)
@@ -206,6 +255,12 @@ async function handleChat(req, res, pathname, method, body, pick) {
   }
 
   // 耗尽
+  // 回填最后一次尝试的 model/key, 避免面板上一片 usedModel/key = null 无法定位限流源
+  if (lastC) {
+    rec.usedModel = lastC.modelId; rec.key = shortKey(lastC.key);
+    rec.status = (lastResult && lastResult.status) || 0;
+    rec.attempts = attempts; rec.attemptIdx = attempts; rec.degraded = degradeCount > 0;
+  }
   return outputFail(res, provider, lastResult, attempts, rec);
 }
 
@@ -256,16 +311,95 @@ function sseReducer() {
 
 /* ---------- 调用日志辅助(模块级,供 outputOk/outputFail 使用) ---------- */
 
+/** 请求体落盘形态(REQUESTS_REQ_MODE):
+ *  text     (默认) 拍平成纯文本对话记录——只保留各消息正文与 tool 调用/返回,
+ *               去掉 JSON 结构(键名、转义、大括号)、tools 定义、thinking 推理轨迹
+ *               (reasoning / reasoning_content)
+ *  text-ask          同样拍平,但只保留 system / user 消息(用户实际提问的内容)
+ *  json              保留原始 JSON 对象(2026-10 之前行为) */
+const REQ_MODE = String(process.env.REQUESTS_REQ_MODE || 'text').toLowerCase();
+
+/** 请求体拍平:返回纯文本(string),非消息结构时原样 JSON 串返回
+ *  格式: "[角色] 正文" / "[assistant] tool_call #N 名称 参数" / "[tool] #N 名称 结果"
+ *  tool_call 用递增序号替代 id,与对应 tool 结果配对(保留因果链,去掉 UUID 噪声) */
+function flattenReq(req) {
+  if (!req || typeof req !== 'object') return JSON.stringify(req);
+  if (REQ_MODE === 'json') return JSON.stringify(req);
+  const msgs = Array.isArray(req.messages) ? req.messages : null;
+  if (!msgs) return JSON.stringify(req);   // 无 messages 的请求(纯参数)极小,原样保留
+
+  const lines = [];
+  const paramEntries = [];
+  for (const [k, v] of Object.entries(req)) {
+    if (k === 'messages' || k === 'tools') continue;
+    if (v === null || v === undefined || v === false) continue;
+    const sv = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    paramEntries.push(k + '=' + sv);
+  }
+  if (paramEntries.length || req.tools) {
+    lines.push('请求参数: ' + paramEntries.join('  ') + (req.tools ? `  tools=${req.tools.length}个` : ''));
+  }
+
+  const askOnly = REQ_MODE === 'text-ask';
+  const id2no = new Map();
+  let callNo = 0;
+  const text = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v));
+
+  for (const msg of msgs) {
+    const role = msg.role || '?';
+    if (askOnly && role !== 'system' && role !== 'user') continue;
+
+    if (role === 'assistant') {
+      const c = text(msg.content);
+      if (c) lines.push(`[${role}] ${c}`);
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          callNo++;
+          const name = (tc.function && tc.function.name) || tc.name || 'tool';
+          if (tc.id) id2no.set(tc.id, callNo);
+          lines.push(`[${role}] tool_call #${callNo} ${name} ${text(tc.function ? tc.function.arguments : tc)}`);
+        }
+      }
+    } else if (role === 'tool') {
+      const no = id2no.get(msg.tool_call_id);
+      const label = `${no ? '#' + no + ' ' : ''}${msg.name || ''}`.trim();
+      lines.push(`[${role}] ${label} ${text(msg.content)}`);
+    } else {
+      lines.push(`[${role}] ${text(msg.content) || '(无正文)'}`);
+    }
+    // thinking / reasoning / reasoning_content 一律不保留
+  }
+  return lines.join('\n\n');
+}
+
 /** 收尾: 串化响应/截断/填充耗时;返回可写日志的记录 */
 function finalizeRec(rec) {
-  rec.ms = Date.now() - rec.t;
+  // ms 已预设(中间尝试记录=本次尝试耗时)则保留, 否则按整次调用起算(最终记录=含全部重试的总耗时)
+  if (!rec.ms) rec.ms = Date.now() - rec.t;
   if (rec.sseText != null) rec.res = rec.sseText; // 流式: 精简后的内容文本
   else if (rec.resChunks && rec.resChunks.length) rec.res = Buffer.concat(rec.resChunks).toString('utf8');
   if (rec.res && rec.res.length > requests.MAX_REC) { rec.truncated = true; rec.res = rec.res.slice(0, requests.MAX_REC); }
-  try { if (rec.req && JSON.stringify(rec.req).length > requests.MAX_REQ) { rec.reqTruncated = true; rec.req = null; } } catch { rec.req = null; }
-  // 外部接入 key 的 token 消耗累计(prompt+completion,按首次记录值计)
+  if (rec.req) {
+    // 请求体超限: 按字符截断保留前 MAX_REQ 个字符(字符数截断不会落在 UTF-8 字符中间;
+    // 注: MAX_REQ 按字符计, 中文行实际字节数最多 4 倍, 故字节上限另由 requests.MAX_LINE_BYTES 放宽)
+    // 而非整条丢弃——整条丢弃时连 system prompt/模型参数都看不到, 只剩一个 reqTruncated 标记
+    try {
+      // 原始请求体字节数: 优先用上游实际发送的字节数(省掉一次 600KB+ 整对象 JSON.stringify,
+      // 该序列化在事件循环线程同步执行, 是大请求体下最主要的单请求阻塞来源);
+      // bodyBytes 缺失时(非 handleChat 路径构造的记录)兜底计算
+      rec.reqSize = rec.bodyBytes || Buffer.byteLength(JSON.stringify(rec.req));
+      let reqText = flattenReq(rec.req);
+      if (reqText.length > requests.MAX_REQ) {
+        rec.reqTruncated = true;
+        reqText = reqText.slice(0, requests.MAX_REQ) + '\u2026[truncated]';
+      }
+      rec.req = reqText;
+    } catch { rec.req = null; rec.reqTruncated = true; }
+  }
+  // 外部接入 key 的请求数与 token 消耗累计: 只对最终记录计一次(final=true)。
+  // 被重试的中间尝试(final=false)不计, 否则 ingress key 的 reqs 会按上游尝试数虚增
   try {
-    if (rec.ingressKeyId) keys.touch(rec.ingressKeyId, (rec.promptTokens || 0) + (rec.completionTokens || 0));
+    if (rec.ingressKeyId && rec.final !== false) keys.touch(rec.ingressKeyId, (rec.promptTokens || 0) + (rec.completionTokens || 0));
   } catch { /* 计数失败不影响日志落盘 */ }
   delete rec.resChunks;
   return rec;
@@ -355,4 +489,4 @@ async function handleModels(res, pick) {
   return json(res, 200, { object: 'list', data });
 }
 
-module.exports = { handleChat, handleModels, json, shortKey, states, startTime };
+module.exports = { handleChat, handleModels, json, shortKey, states, startTime, finalizeRec, flattenReq, REQ_MODE, logAttempt, traceId };

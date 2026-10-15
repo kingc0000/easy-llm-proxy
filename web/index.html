@@ -141,16 +141,28 @@
     <div class="req-head">
       <div class="req-title">
         <h2>调用记录</h2>
-        <span class="req-desc">原始请求 / 原始返回 / 错误信息（按天落盘，保留 7 天）</span>
+        <span class="req-desc">全量 LLM API 调用记录（成功 / 上游失败 / 被拒 / 超限均记，按天落盘保留 7 天）；每次上游尝试（含被重试的 429 / 5xx / 超时）都单独记一行，同一客户端调用的各次尝试共享 trace id；列表只显示元数据，点击行才加载原始请求与原始返回</span>
       </div>
       <div class="req-filters">
         <select id="req-date"></select>
         <input id="req-model" placeholder="模型">
         <input id="req-status" placeholder="状态码">
         <input id="req-q" placeholder="内容关键词">
+        <label class="req-cb" title="只显示每次客户端调用的最终结果(隐藏被重试的中间尝试)"><input type="checkbox" id="req-final"> 只看最终</label>
         <button id="btn-req-search" class="btn small primary">查询</button>
         <button id="btn-req-refresh" class="btn small ghost" title="刷新">↻</button>
+        <button id="btn-req-purge" class="btn small ghost" title="按时间区间删除记录(精确到分钟)">🗑 清理</button>
       </div>
+    </div>
+    <div id="req-purge-bar" class="hidden" style="margin:8px 0 12px;padding:10px 12px;border:1px solid #2a3550;border-radius:8px;background:#141b2c;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <b style="font-size:12px;color:#9fb0cc">按时间区间清理</b>
+      <input id="req-purge-from" class="mono" placeholder="from 2026-10-14T00:00">
+      <input id="req-purge-to" class="mono" placeholder="to 2026-10-14T00:30 (可空=只删 from 那一分钟)">
+      <button id="btn-purge-dry" class="btn small ghost">预览</button>
+      <button id="btn-purge-go" class="btn small primary">执行</button>
+      <button id="btn-purge-close" class="btn small ghost">✕</button>
+      <span id="req-purge-out" class="req-desc" style="flex:1;min-width:180px"></span>
+      <span class="req-desc">时间精确到分钟，实际删除 [from 该分钟起点, to 该分钟结束)；删除即清空正文与元数据，不可恢复</span>
     </div>
     <div id="req-list" class="req-list"></div>
   </section>

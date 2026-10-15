@@ -547,37 +547,63 @@ async function loadRequests() {
   const model = $('#req-model').value.trim();
   const status = $('#req-status').value.trim();
   const q = $('#req-q').value.trim();
-  const query = new URLSearchParams({ date, model, status, q, limit: '20' }).toString();
+  const fin = ($('#req-final') && $('#req-final').checked) ? '1' : '';
+  const query = new URLSearchParams({ date, model, status, q, final: fin, limit: '50' }).toString();
   try {
     const d = await api('/api/requests?' + query);
     const list = $('#req-list');
+    window.__reqRows = d.rows || [];
+    window.__reqDate = date;
+    window.__reqDetail = {};          // 详情惰性加载缓存(列表不携带正文)
     if (!d.total) { list.innerHTML = `<div class="empty">${date ? date + ' ' : ''}暂无调用记录${(model || status || q) ? '(符合筛选)' : ''}</div>`; return; }
-    window.__reqRows = d.rows; // 供展开时惰性生成详情
     list.innerHTML = d.rows.map((r, i) => {
       const st = r.status;
       const cls = (st >= 200 && st < 300) ? 'ok' : 'err';
       const errInfo = r.error ? ` <span class="req-err">⚡ ${esc(r.error)}</span>` : '';
       const downgraded = r.degraded ? ' <span title="降级命中">⇣降级</span>' : '';
+      const pathInfo = r.path ? ` <span class="mono" title="接口路径">${esc(r.path)}</span>` : '';
+      const clientInfo = r.ingressKey ? ` <span class="mono" title="外部接入 key">${esc(String(r.ingressKey).slice(0, 16))}</span>` : '';
+      const tok = `<span title="请求tok/缓存tok/输出tok">${r.promptTokens || 0}/${r.cachedTokens || 0}/${r.completionTokens || 0}</span>`;
+      // 尝试链: final=false 是被重试掉的单次上游尝试(独立成行);最终记录 attempts>1 说明含重试
+      const attemptInfo = r.final === false
+        ? `<span class="req-err" title="同一次调用的第 ${r.attemptIdx || 1} 次上游尝试, 已被重试">第${r.attemptIdx || 1}次尝试</span>`
+        : ((r.attempts || 0) > 1 ? `<span class="req-time" title="含重试, 各次上游尝试均有独立记录">尝试${r.attempts}次</span>` : '');
+      const traceInfo = r.traceId ? ` <span class="mono" title="调用追踪 ID: 同一次客户端调用的全部上游尝试共享">${esc(String(r.traceId).slice(0, 8))}</span>` : '';
       return `<div class="req-row">
         <div class="req-head" onclick="toggleReqDetail(${i}, event)">
           <span class="req-time">${new Date(r.t).toLocaleString()}</span>
-          <b>${esc(r.provider)}</b>
+          ${pathInfo}
+          <b>${esc(r.provider || '-')}</b>
           <span>${r.model !== r.usedModel && r.model ? esc(r.model) + ' → ' : ''}${esc(r.usedModel || r.model || '-')}</span>
           <span class="mono">${esc(r.key || '-')}</span>
           <span class="req-status ${cls}">${st || '-'}</span>
-          <span>${r.ms}ms</span>
-          <span title="请求tok/缓存tok/输出tok">${r.promptTokens}/${r.cachedTokens}/${r.completionTokens}</span>
-          ${downgraded}
-          <span class="req-time">${r.attempts > 1 ? '尝试' + r.attempts + '次' : ''}</span>
+          <span>${r.ms || 0}ms</span>
+          ${tok}
+          ${downgraded}${clientInfo}
+          ${attemptInfo}
+          ${traceInfo}
           ${errInfo}
         </div>
         <div class="req-detail hidden" id="reqd-${i}">
-          <div><h4>原始请求${r.reqTruncated ? '(截断)' : ''}</h4><pre data-kind="req" data-i="${i}"></pre></div>
-          <div><h4>原始返回${r.truncated ? '(原始超出512KB截断)' : ''}${r.resClipped ? '(列表仅显示前128KB,磁盘完整)' : ''}${(!r.truncated && !r.resClipped && r.apiType === 'anthropic') ? '(上游原始)' : ''}</h4><pre data-kind="res" data-i="${i}"></pre></div>
+          <div><h4>原始请求</h4><pre data-kind="req" data-i="${i}"></pre></div>
+          <div><h4>原始返回</h4><pre data-kind="res" data-i="${i}"></pre></div>
         </div>
       </div>`;
     }).join('');
   } catch (e) { if (maybeNeedToken(e)) return; $('#req-list').innerHTML = `<div class="empty err">加载失败: ${esc(e.message)}</div>`; }
+}
+/* 详情: 列表只返回元数据;点开才按字节偏移读取该行完整原文(含 req/res) */
+function fetchReqDetail(i) {
+  const r = (window.__reqRows || [])[i];
+  const cached = (window.__reqDetail || {})[i];
+  if (cached) return Promise.resolve(cached);
+  if (!r || r.off == null) return Promise.reject(new Error('该行无正文(被拒/超限调用)'));
+  const u = '/api/requests/detail?' + new URLSearchParams({ date: window.__reqDate || '', off: String(r.off), len: String(r.byteLen || 0) });
+  return api(u).then((row) => {
+    if (!(window.__reqDetail)) window.__reqDetail = {};
+    window.__reqDetail[i] = row;
+    return row;
+  });
 }
 function toggleReqDetail(i, ev) {
   ev.stopPropagation();
@@ -586,15 +612,70 @@ function toggleReqDetail(i, ev) {
   const closing = !el.classList.contains('hidden');
   el.classList.toggle('hidden');
   if (closing) return; // 收起无需填充
-  const r = (window.__reqRows || [])[i];
-  if (!r) return;
-  el.querySelectorAll('pre').forEach((p) => {
-    if (p.dataset.kind === 'req') p.textContent = detailJson(r.req, r.reqTruncated);
-    else if (p.dataset.kind === 'res') p.textContent = detailJson(r.res == null ? (r.error ? '无(失败)' : '无') : String(r.res), r.truncated);
+  const fill = (f) => {
+    if (!f) return;   // detail 读取异常时不填, 保留"加载中…"由 catch 覆盖
+    el.querySelectorAll('pre').forEach((p) => {
+      if (p.dataset.kind === 'req') p.textContent = detailJson(f.req ?? null, !!f.reqTruncated);
+      else if (p.dataset.kind === 'res') p.textContent = detailJson(f.res == null ? '无(该调用未转发到上游)' : String(f.res), !!f.truncated);
+    });
+  };
+  if ((window.__reqDetail || {})[i]) { fill(window.__reqDetail[i]); return; }
+  el.querySelectorAll('pre').forEach((p) => p.textContent = '加载中…');
+  fetchReqDetail(i).then((f) => fill(f)).catch((e) => {
+    el.querySelectorAll('pre').forEach((p) => p.textContent = '读取失败: ' + (e.message || e));
   });
 }
 $('#btn-req-search').addEventListener('click', loadRequests);
 $('#btn-req-refresh').addEventListener('click', () => { loadRequestDates(); loadRequests(); });
+
+/* 按时间区间清理调用记录(精确到分钟) */
+if ($('#btn-req-purge')) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const out = $('#req-purge-out');
+  const setOut = (t) => { out.textContent = t; };
+  const readRange = () => {
+    const from = ($('#req-purge-from').value || '').trim();
+    const to = ($('#req-purge-to').value || '').trim();
+    if (!from) { setOut('请填写 from(格式 2026-10-14T00:00)'); return null; }
+    return { from, to, url: '/api/requests?from=' + encodeURIComponent(from) + (to ? '&to=' + encodeURIComponent(to) : '') };
+  };
+  $('#btn-req-purge').addEventListener('click', () => {
+    const bar = $('#req-purge-bar');
+    bar.classList.toggle('hidden');
+    if (!bar.classList.contains('hidden')) {
+      setOut('');
+      const d = new Date();
+      $('#req-purge-from').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00`;
+      $('#req-purge-to').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T23:59`;
+    }
+  });
+  $('#btn-purge-close').addEventListener('click', () => $('#req-purge-bar').classList.add('hidden'));
+  $('#btn-purge-dry').addEventListener('click', async () => {
+    const r = readRange(); if (!r) return;
+    setOut('预览中…');
+    try {
+      const d = await api(r.url + '&dry=1');
+      if (!d.ok) return setOut(d.error || '预览失败');
+      setOut(`预览: 将删除 ${d.totalRemoved} 条 / ${(d.totalFreed / 1048576).toFixed(2)} MB(涉及 ${d.totalDays} 个日期文件)，尚未删除`);
+    } catch (e) { if (!maybeNeedToken(e)) setOut('预览失败: ' + (e.message || e)); }
+  });
+  $('#btn-purge-go').addEventListener('click', async () => {
+    const r = readRange(); if (!r) return;
+    setOut('预览中…');
+    try {
+      const pv = await api(r.url + '&dry=1');
+      if (!pv.ok) return setOut(pv.error || '预览失败');
+      if (pv.totalRemoved === 0) return setOut('该区间没有记录，无需清理');
+      if (!confirm(`确认删除 ${pv.totalRemoved} 条调用记录？\n\n此操作会同时删除原始请求与原始返回正文，不可恢复。`)) return setOut('已取消');
+      setOut('清理中…');
+      const d = await api(r.url, { method: 'DELETE' });
+      if (!d.ok) return setOut(d.error || '清理失败');
+      setOut(`✅ 已删除 ${d.totalRemoved} 条，释放 ${(d.totalFreed / 1048576).toFixed(2)} MB`);
+      loadRequestDates(); loadRequests();
+    } catch (e) { if (!maybeNeedToken(e)) setOut('清理失败: ' + (e.message || e)); }
+  });
+  ['req-purge-from', 'req-purge-to'].forEach((id) => $('#' + id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-purge-dry').click(); }));
+}
 if ($('#req-date')) $('#req-date').addEventListener('change', loadRequests);
 $('#req-model').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRequests(); });
 $('#req-status').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadRequests(); });

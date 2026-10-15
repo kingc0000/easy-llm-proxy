@@ -169,9 +169,11 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 | `BIND_HOST` | `127.0.0.1` | 监听地址（Docker 设 `0.0.0.0`）|
 | `CONFIG_FILE` | `/etc/easy-llm-proxy/config.json` | 配置文件路径 |
 | `STATS_FILE` | `/var/lib/easy-llm-proxy/stats.json` | 统计持久化路径 |
-| `REQUESTS_DIR` | `/var/lib/easy-llm-proxy/requests` | 调用日志目录（按天 jsonl）|
+| `REQUESTS_DIR` | `/var/lib/easy-llm-proxy/requests` | 调用日志目录（按天双文件：`<日>.jsonl` 正文 + `<日>.meta.jsonl` 元数据索引）|
 | `REQUESTS_KEEP_DAYS` | `7` | 调用日志保留天数 |
 | `REQUESTS_MAX_REC` | `524288` | 单条响应原文记录上限(字节) |
+| `REQUESTS_MAX_REQ` | `1048576` | 单条请求体记录上限(字节) |
+| `REQUESTS_REQ_MODE` | `text` | 请求体落盘形态：`text` 拍平成纯文本对话记录（默认）/ `text-ask` 只留 system+user 提问 / `json` 保留原始结构 |
 | `ADMIN_TOKEN` | 空 | 管理 API 备用钥匙（脚本/运维用，优先级低于登录会话）|
 | `AUTH_USER` / `AUTH_PASS` | `admin` / `admin123` | 首次创建登录账号（已有 `auth.json` 不覆盖，生产请改默认密码）|
 | `AUTH_FILE` | `/etc/easy-llm-proxy/auth.json` | 账号凭证文件（scrypt 哈希，600 权限）|
@@ -180,6 +182,36 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 | `KEYS_SECRET_FILE` | `/etc/easy-llm-proxy/keys-secret` | key 签名密钥(0600;丢失则历史 key 全部失效)|
 | `OPEN_ACCESS` | 空 | 设为 `1` 强制开放 `/v1`(本地自用;忽略 keys.json)|
 | `TIMEOUT_MS` | `120000` | 上游请求超时(毫秒) |
+
+## 📝 调用日志（全量记录 + 索引）
+
+按天双文件落盘到 `REQUESTS_DIR`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `<YYYY-MM-DD>.jsonl` | 完整记录（原始请求 / 原始返回 / 错误，追加写入）|
+| `<YYYY-MM-DD>.meta.jsonl` | 元数据索引（时间、provider、model、状态码、耗时、token、脱敏 key 名、正文预览、**正文字节偏移**）|
+
+- **记录范围**：所有到达 `/v1` 的 LLM 调用——转发成功、上游失败（429/超时等）、**401 鉴权拒绝**、413 请求体超限、`/v1/models`。区别只在有没有正文。
+- **请求体超限**：超过 `REQUESTS_MAX_REQ` 时**截断保留前 N 字符**并置 `reqTruncated`（记录原始字节数到 `reqSize`），不再整条丢弃——整条丢弃时连 system prompt/模型参数都看不到。响应超过 `REQUESTS_MAX_REC` 时同样截断保留前缀（`truncated`）。
+- **请求体形态（`REQUESTS_REQ_MODE=text`，默认）**：不原样存档 JSON，而是拍平成纯文本对话记录，只保留**实际的请求内容**：
+  - 每条消息一行 `[角色] 正文`（system / user / assistant / tool），消息间空行分隔；
+  - `tool_call` 用递增序号代替 UUID（`[assistant] tool_call #1 名称 参数`），对应 `tool` 结果回指同一序号（`[tool] #1 名称 结果`），因果链可读；
+  - `tools` 定义折叠为数量（`tools=30个`），顶层参数压成一行（`model=… stream=…`）；
+  - **不保留**：JSON 语法/键名/转义、thinking 推理轨迹（`reasoning` / `reasoning_content`）。实测体积省 44–56%（622KB → 275KB）。
+  - 需要完整原始结构时设 `REQUESTS_REQ_MODE=json`（2026-10 之前行为）；只保留提问内容用 `text-ask`。
+- **查询走索引**：`GET /api/requests` 只读 meta 文件并返回元数据，**不返回请求/响应正文**，因此日志再大也秒开（此前数百 MB 正文需两遍全量解析导致查询超时）。
+- **正文点开才取**：`GET /api/requests/detail?date=&off=&len=` 按偏移随机读回单条完整记录，面板点击行时调用。
+- **旧日志自愈**：启动时（接收请求之前）为只有 `.jsonl` 的旧日志一次性补建 `.meta.jsonl`；补建失败则列表自动退化为流式扫描（慢但可用）。补建实现为同步有界内存扫描（1MB 分块），可安全在 `node bin/index-logs.js` 中离线执行。
+- **隐私**：key 只存脱敏前缀；被拒调用的 `ingressKey` 只记前 12 位，真实 key 绝不明文落盘。
+- **按时间区间清理（精确到分钟）**：`DELETE /api/requests?from=2026-10-14T00:00&to=2026-10-14T00:30`（需 `X-Admin-Token`）。
+  - 时间格式 `YYYY-MM-DDTHH:MM`（本地时区，秒被忽略），支持空格分隔与 `YYYY/MM/DD`。
+  - 实际删除区间 **[from 该分钟起点, to 该分钟结束)**，即 `to` 那整分钟也包含；不传 `to` 时只删 `from` 那一分钟。
+  - 加 `&dry=1` 只统计命中条数与可释放字节，不改文件。
+  - 删除会同时清空正文行与元数据索引，并用 `tmp` + 原子 `rename` 重建（`off/byteLen` 按保留行重新累计），因此删除后列表与详情偏移依然精确；若某天记录被清空则删除该天双文件。
+  - 面板「调用记录 → 🗑 清理」按钮提供同样的预览/执行入口。
+  - 与 `REQUESTS_KEEP_DAYS` 自动清理互补：后者只按**整天文件**过期删除，本接口可做天内分钟级精修。
+
 
 ## 🖥️ Web 管理面板
 
@@ -190,7 +222,7 @@ client = anthropic.Anthropic(base_url="https://elp.example.com", api_key="sk-elp
 | **Providers** | 卡片化查看/编辑 Provider、Model、Key、权重、**冷却秒数**；一键测试连接（未保存也能测）|
 | **外部接入** | 生成/吊销外部接入 key（baseURL + key），含 baseURL 与 SDK 示例、请求数/token 消耗 |
 | **统计** | 实时 KPI（请求/成功/失败/重试/降级/耗时/成功率）、三种真实 Token、24h 趋势图、错误类型分布、Provider/Key 明细、降级事件 |
-| **记录** | 调用日志：按日期/模型/状态码/内容关键词查询，点击展开 **原始请求 + 原始返回（流式精简为内容文本）+ 错误信息** |
+| **记录** | 全量调用日志（转发成功 / 上游失败 / **401 鉴权拒绝 / 413 超限** 均记）：按日期/模型/状态码/内容关键词查询，**列表只返回元数据、秒开**，点击行才按字节偏移读取 **原始请求 + 原始返回（流式精简为内容文本）+ 错误信息** |
 | **账号** | 右上角 ⚙ 修改用户名/密码（需旧密码，改后全部会话失效重新登录）|
 
 ## 🌐 公网部署（nginx 反代）
@@ -229,7 +261,7 @@ src/config.js        配置加载与校验(mtime 热加载)
 src/balance.js       加权轮询/降级/切回引擎
 src/adapters.js      上游请求/协议转换/usage 提取
 src/stats.js         统计聚合与持久化
-src/requests.js      调用日志(原始请求/返回/错误; 大文件流式读取)
+src/requests.js      调用日志(双文件: 正文 + 元数据索引; 列表读索引,详情按字节偏移随机读)
 src/keys.js          外部接入 key(HMAC 哈希存储 + 校验 + 创建/吊销)
 src/auth.js          登录/会话/改密
 web/                 Web 面板(纯静态)
@@ -241,7 +273,7 @@ deploy-docker.sh     Docker 一键部署
 ## 🧪 测试
 
 ```bash
-npm test              # 权重轮询/冷却/降级 + 外部接入 key 单元测试(86 断言)
+npm test              # 权重轮询/冷却/降级 + 外部接入 key + 调用日志(索引/详情/回退) 单元测试(110 断言)
 # 本地 mock 集成: node test/mock-upstream.js + mock-anthropic.js,再 curl 验证
 ```
 

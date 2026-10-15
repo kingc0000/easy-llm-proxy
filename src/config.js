@@ -77,6 +77,10 @@ function normalizeProvider(p, i) {
       const keys = ownKeys.length ? ownKeys : providerKeys; // model 无 key → 共享 provider 池
       if (!keys.length) continue;
       const keyCooldowns = {};
+      // 合并 provider 级与 model 级 key cooldown(model 级优先)。
+      // 修复: 此前只读 ownKeysRaw,当 model 无独立 keys 共享 provider 池时,
+      // provider 级 {value,note,cooldown} 的冷却配置被静默丢弃,退化为全局默认 60s
+      for (const k of providerKeysRaw) if (k.cooldown != null) keyCooldowns[k.value] = k.cooldown;
       for (const k of ownKeysRaw) if (k.cooldown != null) keyCooldowns[k.value] = k.cooldown;
       models.push({
         id: String(m.id),

@@ -47,16 +47,40 @@ function readBody(req, res) {
   });
 }
 
-/** 管理 API: provider 结构校验(防"缺字段静默自毁") */
+/** 管理 API: provider 结构校验(防"缺字段静默自毁")
+ *  model 可省略 keys 以共享 provider 级 keys,也可用 {value,note,cooldown} 对象形式;
+ *  修复: 此前强制要求 model.keys 必填且全为字符串,导致合法的「provider 级共享池」配置被拒 */
 function validateProviderPayload(p) {
   if (!p || typeof p.name !== 'string' || !p.name.trim()) return 'name 必填';
   if (!Array.isArray(p.models) || !p.models.length) return '至少一个 model';
+  const hasProviderKeys = Array.isArray(p.keys) && p.keys.length > 0;
+  // key 项: 字符串,或 {value|string key, note?, cooldown?} 对象
+  const validKeyItem = (k) => (typeof k === 'string' && k)
+    || (k && typeof k === 'object' && (String(k.value || k.key || '').trim()));
   for (const m of p.models) {
     if (!m || typeof m.id !== 'string' || !m.id.trim()) return 'model 缺少 id';
-    if (!Array.isArray(m.keys) || !m.keys.length || !m.keys.every((k) => typeof k === 'string' && k)) return `model "${m.id}" 缺少有效 keys`;
+    if (m.keys !== undefined && (!Array.isArray(m.keys) || !m.keys.length || !m.keys.every(validKeyItem))) {
+      return `model "${m.id}" keys 必须为非空数组(或省略以共享 provider 级 keys)`;
+    }
     if (Number.isFinite(m.weight) && (m.weight < 1 || m.weight > 100)) return `model "${m.id}" weight 需 1-100`;
   }
+  if (!hasProviderKeys) return '至少需要一个 provider 级 key';
   return null;
+}
+
+/** 统计响应脱敏: byKey 的 key 替换为 key1/key2 序号(真实 key 片段不出接口)。
+ *  /api/stats 与 /stats 共用,避免两处实现不一致(修复: /stats 此前直接展开 summary,泄露 shortKey 片段)。
+ *  providers 显式传入(而非内部 config.load()),便于测试隔离与调用方缓存控制 */
+function maskStatsKeys(sum, providers) {
+  const idxMap = new Map();
+  const shortOf = (k) => (k && k.length > 12 ? k.slice(0, 8) + '…' + k.slice(-4) : k);
+  let n = 0;
+  for (const p of providers || []) {
+    for (const k of p.keys || []) if (!idxMap.has(k)) { idxMap.set(k, 'key' + ++n); idxMap.set(shortOf(k), 'key' + n); }
+    for (const m of p.models) for (const k of m.keys || []) if (!idxMap.has(k)) { idxMap.set(k, 'key' + ++n); idxMap.set(shortOf(k), 'key' + n); }
+  }
+  if (idxMap.size) sum.byKey = sum.byKey.map((s) => ({ ...s, key: idxMap.get(s.key) || 'key?' }));
+  return sum;
 }
 
 async function handleApi(req, res, pathname, method) {
@@ -98,15 +122,7 @@ async function handleApi(req, res, pathname, method) {
     return json(res, 200, { status: 'ok', uptime: Math.floor((Date.now() - startTime) / 1000) });
   }
   if (pathname === '/api/stats') {
-    const sum = stats.summary();
-    // 统计响应把 key 替换为 key1/key2/key3 序号(真实 key 不出接口)
-    const idxMap = new Map();
-    const shortOf = (k) => (k && k.length > 12 ? k.slice(0, 8) + '…' + k.slice(-4) : k);
-    for (const p of config.load().providers) {
-      (p.keys || []).forEach((k, i) => { idxMap.set(k, 'key' + (i + 1)); idxMap.set(shortOf(k), 'key' + (i + 1)); });
-      for (const m of p.models) (m.keys || []).forEach((k) => { const n = 'key' + (idxMap.size / 2 + 1); if (!idxMap.has(k)) { idxMap.set(k, n); idxMap.set(shortOf(k), n); } });
-    }
-    if (idxMap.size) sum.byKey = sum.byKey.map((s) => ({ ...s, key: idxMap.get(s.key) || 'key?' }));
+    const sum = maskStatsKeys(stats.summary(), config.load().providers);
     return json(res, 200, {
       status: 'ok', since: new Date(startTime).toISOString(), uptime: Math.floor((Date.now() - startTime) / 1000),
       ...sum,
@@ -119,12 +135,34 @@ async function handleApi(req, res, pathname, method) {
   if (pathname === '/api/requests/dates' && method === 'GET') {
     return json(res, 200, { dates: requests.dates() });
   }
+  if (pathname === '/api/requests/detail' && method === 'GET') {
+    // 详情: 按列表行携带的字节偏移随机读回完整记录(含 req/res 原文)——列表不返回原文,点开才取
+    const qd = new URL(req.url, 'http://x').searchParams;
+    const date = qd.get('date') || '';
+    const off = parseInt(qd.get('off') || '0', 10);
+    const len = parseInt(qd.get('len') || '0', 10);
+    return requests.detail(date, off, len)
+      .then((row) => json(res, 200, row || {}))
+      .catch((e) => json(res, 500, { error: { message: '读取详情失败: ' + e.message } }));
+  }
   if (pathname === '/api/requests' && method === 'GET') {
     const q = new URL(req.url, 'http://x').searchParams;
     return requests.list(q.get('date') || '', {
       model: q.get('model') || '', status: q.get('status') || '', q: q.get('q') || '',
+      final: q.get('final') || '',
       offset: q.get('offset') || '0', limit: q.get('limit') || '50',
     }).then((data) => json(res, 200, data)).catch(() => json(res, 500, { ok: false, error: 'read failed' }));
+  }
+  if (pathname === '/api/requests' && method === 'DELETE') {
+    // 按时间区间清理调用日志(精确到分钟): DELETE /api/requests?from=2026-10-14T22:05&to=2026-10-14T23:00
+    // 加 &dry=1 只统计不删除;不传 to 时只删 from 那一分钟
+    const q = new URL(req.url, 'http://x').searchParams;
+    const from = q.get('from') || '';
+    const to = q.get('to') || '';
+    if (!from) return json(res, 400, { ok: false, error: '需要 from=YYYY-MM-DDTHH:MM(可选 &to= / &dry=1)' });
+    return requests.purgeRange(from, to, q.get('dry') === '1')
+      .then((r) => json(res, r.ok ? 200 : 400, r))
+      .catch((e) => json(res, 500, { ok: false, error: '清理失败: ' + e.message }));
   }
   if (isConf && method === 'GET') {
     const cfg = config.load();
@@ -224,4 +262,4 @@ async function handleApi(req, res, pathname, method) {
   return json(res, 404, { error: { message: 'not found' } });
 }
 
-module.exports = { handleApi, adminOk };
+module.exports = { handleApi, adminOk, validateProviderPayload, maskStatsKeys };

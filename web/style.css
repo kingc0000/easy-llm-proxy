@@ -255,18 +255,26 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
   padding: .65rem .75rem; box-shadow: var(--shadow-sm);
 }
-.req-filters select, .req-filters input {
+.req-filters select, .req-filters input:not(#req-final) {
   height: 34px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; color: var(--fg); padding: 0 .65rem; font-size: .84rem;
   transition: border-color .15s, box-shadow .15s;
 }
+.req-cb {
+  display: inline-flex; align-items: center; gap: .35rem; height: 34px;
+  padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); font-size: .82rem; color: var(--muted); cursor: pointer;
+  user-select: none; transition: border-color .15s, color .15s;
+}
+.req-cb:hover { border-color: #c9d2e1; color: var(--fg); }
+.req-cb input { width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .req-filters select {
   padding-right: 1.9rem; min-width: 140px; appearance: none; cursor: pointer;
   background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237b8499' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right .6rem center;
 }
-.req-filters select:hover, .req-filters input:hover { border-color: #c9d2e1; }
-.req-filters select:focus, .req-filters input:focus {
+.req-filters select:hover, .req-filters input:not(#req-final):hover { border-color: #c9d2e1; }
+.req-filters select:focus, .req-filters input:not(#req-final):focus {
   outline: none; border-color: var(--accent); background-color: #fff;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, .16);
 }
