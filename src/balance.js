@@ -108,6 +108,9 @@ function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
 
   // 1) 到期清理(次数/时长达标);调用方 diff 前后 Map 记 recover 事件
+  //    判定粒度: **per-key** —— 组内达限的 key 单独回主,不再被"从未达限"的
+  //    key 阻塞(修复: 降级 model 上某 key 一直 429 无成功,会拖死整组永不回主,
+  //    导致主 model 在上游恢复后仍被永久跳过)。
   const main = mainModel(p);
   const groups = new Map(); // 降级目标 modelId → [keys]
   for (const [k, d] of [...st.degraded]) {
@@ -115,8 +118,16 @@ function plan(p, st, requestedId) {
     groups.get(d.modelId).push(k);
   }
   for (const [gModel, gkeys] of groups) {
-    // 本层全部 key 都达限(次数/时长)才切;还有未达限 → 保持不动
-    if (!gkeys.every((k) => keyDegradedDue(p, st.degraded.get(k)))) continue;
+    const dueKeys = gkeys.filter((k) => keyDegradedDue(p, st.degraded.get(k)));
+    if (dueKeys.length === 0) continue; // 本组无 key 达限 → 保持不动
+
+    // 部分达限: 达限 key 单独回主,其余保持降级(不整组切换,避免抖动)
+    if (dueKeys.length < gkeys.length) {
+      for (const k of dueKeys) st.degraded.delete(k);
+      continue;
+    }
+
+    // 全部达限: 整层统一决策(主冷却决定回主/下探)
     const mainPassed = gkeys.every((k) => !inCooldown(p, st, main.id, k)); // 主是否已过冷却期
     if (mainPassed) {
       for (const k of gkeys) st.degraded.delete(k); // 整层回主

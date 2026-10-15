@@ -105,6 +105,7 @@ function normalizeProvider(p, i) {
     apiPath: p.apiPath ? String(p.apiPath) : null,
     apiKeyHeader: p.apiKeyHeader ? String(p.apiKeyHeader) : null,
     extraHeaders: (p.extraHeaders && typeof p.extraHeaders === 'object') ? p.extraHeaders : {},
+    roundRobin: p.roundRobin === true, // 平均轮询(成功也轮转);默认超限轮询
     usageLimit: defUsageLimit,
     useSeconds: defUseSeconds,
     keys: providerKeys,
