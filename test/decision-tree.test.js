@@ -115,11 +115,24 @@ module.exports = async () => {
       assert.ok(r.ok, '请求 ' + (i + 1) + ' 应在备2 成功');
     }
     bal.plan(P, st, null); // 触发到期清理
-    assert.ok(!st.degraded.has('k1'), 'usageLimit=2 达限 → 回主(降级态清空)');
+    assert.ok(!st.degraded.has('k1') && !st.degraded.has('k2') && !st.degraded.has('k3'),
+      'usageLimit=2 合计达限 → 整组回主(降级态清空)');
     // 回主 ≠ 立刻能用主: 主层刚失败仍在冷却期,需等冷却过期
     assert.ok(!bal.plan(P, st, null).some((c) => c.modelId === 'm1'), '主冷却期内主层仍被跳过');
     for (const k of ['k1', 'k2', 'k3']) st.failAt.set('m1\0' + k, Date.now() - 61 * 1000);
     assert.ok(bal.plan(P, st, null).some((c) => c.modelId === 'm1'), '主冷却过期 → 主层恢复为候选');
+  });
+
+  t('R2b 多个 key 各成功一部分,成功次数合计达限 → 整组回主', () => {
+    const st = bal.newState();
+    // 请求1: 只有 m2/k1 成功;请求2: 只有 m2/k2 成功 → 合计 2 达限(usageLimit=2)
+    let r = simulate(P, st, (mid, k) => mid === 'm2' && k === 'k1');
+    assert.ok(r.ok, '请求1 应在 m2/k1 成功');
+    r = simulate(P, st, (mid, k) => mid === 'm2' && k === 'k2');
+    assert.ok(r.ok, '请求2 应在 m2/k2 成功(先试 k1 失败后落到 k2)');
+    bal.plan(P, st, null);
+    assert.ok(!st.degraded.has('k1') && !st.degraded.has('k2') && !st.degraded.has('k3'),
+      '合计 2 ≥ usageLimit=2 → k1/k2/k3 整组回主(不是逐 key 分别达限)');
   });
 
   t('R4 主冷却中且备2 冷却=0(无冷却) → 回主后立刻可再试备2', () => {

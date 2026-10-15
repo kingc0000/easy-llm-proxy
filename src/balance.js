@@ -48,13 +48,23 @@ function modelOf(p, id) {
   return p.models.find((x) => x.id === id) || null;
 }
 
+/** 降级限制的生效值: model 级显式配置优先, 未配(null/undefined)回退 provider 级默认。
+ *  0 = 不限(在比较处用 > 0 判定)。 */
+function limitsOf(p, m) {
+  return {
+    limit: m.usageLimit != null ? m.usageLimit : p.usageLimit,
+    secs: m.useSeconds != null ? m.useSeconds : p.useSeconds,
+  };
+}
+
 /** 某 key 降级是否到期(成功次数或时长任一达标 → 切回主) */
 function keyDegradedDue(p, d) {
   if (!d) return false;
   const m = modelOf(p, d.modelId);
   if (!m) return true;
-  const limitOk = m.usageLimit != null && m.usageLimit > 0 && d.success >= m.usageLimit;
-  const timeOk = m.useSeconds != null && m.useSeconds > 0 && (Date.now() - d.since) >= m.useSeconds * 1000;
+  const { limit, secs } = limitsOf(p, m);
+  const limitOk = limit != null && limit > 0 && d.success >= limit;
+  const timeOk = secs != null && secs > 0 && (Date.now() - d.since) >= secs * 1000;
   return limitOk || timeOk;
 }
 
@@ -109,29 +119,29 @@ function allKeys(p) {
 function plan(p, st, requestedId) {
   const sorted = modelsSorted(p);
 
-  // 1) 到期清理(次数/时长达标);调用方 diff 前后 Map 记 recover 事件
-  //    判定粒度: **per-key** —— 组内达限的 key 单独回主,不被"从未达限"的
-  //    key 阻塞;全部达限 → **总是回主**(用户约定: 达限就重新尝试主 model,
-  //    主冷却由下方层聚合的 inCooldown 跳过机制处理,不在此处下探)。
+  // 1) 到期清理(次数/时长达标 → 整组回主);调用方 diff 前后 Map 记 recover 事件
+  //    判定粒度: **降级组(降级目标 model)级** —— 组内所有 key 在降级目标上的
+  //    成功次数 **合计** ≥ usageLimit 即整组回主(不是每个 key 各自达限,
+  //    也不是要所有 key 都各自达限才回主)。时长取组内最早降级时间(组从第一次
+  //    降级起计时)。达限 → **总是回主**(用户约定: 达限就重新尝试主 model;主冷却
+  //    由下方层聚合的 inCooldown 跳过机制处理,不在此处下探)。
   const main = mainModel(p);
   const groups = new Map(); // 降级目标 modelId → [keys]
   for (const [k, d] of [...st.degraded]) {
     if (!groups.has(d.modelId)) groups.set(d.modelId, []);
     groups.get(d.modelId).push(k);
   }
+  const now = Date.now();
   for (const [gModel, gkeys] of groups) {
-    const dueKeys = gkeys.filter((k) => keyDegradedDue(p, st.degraded.get(k)));
-    if (dueKeys.length === 0) continue; // 本组无 key 达限 → 保持不动
-
-    // 部分达限: 达限 key 单独回主,其余保持降级(不整组切换,避免抖动)
-    if (dueKeys.length < gkeys.length) {
-      for (const k of dueKeys) st.degraded.delete(k);
-      continue;
-    }
-
-    // 全部达限 → 整层回主(旧实现在此检查主冷却并可能下探一层,已废除。
-    // 主冷却中时,层聚合会让主层为空并落到下一可用层 —— 即"达限 → 回主")
-    for (const k of gkeys) st.degraded.delete(k);
+    const m = modelOf(p, gModel);
+    if (!m) { for (const k of gkeys) st.degraded.delete(k); continue; } // 配置已移除该 model → 清态
+    const { limit, secs } = limitsOf(p, m); // model 级优先, 回退 provider 级默认
+    const sumSuccess = gkeys.reduce((s, k) => s + (st.degraded.get(k).success || 0), 0); // 组内成功次数合计
+    const earliest = Math.min(...gkeys.map((k) => st.degraded.get(k).since || now));      // 组起点: 最早降级时间
+    const limitOk = limit != null && limit > 0 && sumSuccess >= limit;
+    const timeOk = secs != null && secs > 0 && (now - earliest) >= secs * 1000;
+    if (!limitOk && !timeOk) continue; // 合计未达限 → 整组保持降级
+    for (const k of gkeys) st.degraded.delete(k); // 合计达限 → 整组回主
   }
 
   const req = requestedId ? modelOf(p, requestedId) : null;

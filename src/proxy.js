@@ -261,6 +261,9 @@ async function handleChat(req, res, pathname, method, body, pick) {
     rec.status = (lastResult && lastResult.status) || 0;
     rec.attempts = attempts; rec.attemptIdx = attempts; rec.degraded = degradeCount > 0;
   }
+  // 最终失败计 errors(failed=errors 同源);中间重试的 429 只记 errorTypes 不在此计入。
+  // 无 lastC(plan 为空,所有 key 冷却中直接 502)也计 — 归到请求 model 的空 key 行。
+  stats.bump(provider.name, lastC ? lastC.modelId : (rec.model || mainId), lastC ? lastC.key : '', 'errors');
   return outputFail(res, provider, lastResult, attempts, rec);
 }
 

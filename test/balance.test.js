@@ -283,17 +283,18 @@ module.exports = async () => {
     assert.ok(p.every((c) => c.modelId === 'm97'), '主与备2 都冷却 → 只试备3');
   });
 
-  t('降级回主按 per-key: 达限的 key 单独回主,未达限的保持降级', () => {
-    const limP = provider(P.models.map((m) => ({ ...m, usageLimit: m.id === 'm99' ? 1 : null })));
+  t('降级回主按整组合计: 组内成功次数合计达限 → 整组回主(非逐 key)', () => {
+    const limP = provider(P.models.map((m) => ({ ...m, usageLimit: m.id === 'm99' ? 2 : null })));
     const st = bal.newState();
     bal.advanceKey(st, 'm100', 'k100a');
     bal.advanceKey(st, 'm100', 'k100b');
     bal.degrade(limP, st, 'm100', ['k100a', 'k100b']); // 主失败 → 降级 m99
-    bal.report(limP, st, 'm99', 'k100a', true); // k100a 达限(限 1)
+    bal.report(limP, st, 'm99', 'k100a', true); // k100a 成功 1(限 2, 合计 1 → 未达限)
     bal.plan(limP, st, 'm100');
-    assert.ok(!st.degraded.has('k100a'), '达限 key 单独回主');
-    assert.ok(st.degraded.has('k100b'), '未达限 key 保持降级(不被拖死)');
-    assert.strictEqual(st.degraded.get('k100b').modelId, 'm99');
+    assert.ok(st.degraded.has('k100a') && st.degraded.has('k100b'), '合计 1 < 2 → 整组保持降级');
+    bal.report(limP, st, 'm99', 'k100b', true); // k100b 成功 1 → 合计 2 达限
+    bal.plan(limP, st, 'm100');
+    assert.ok(!st.degraded.has('k100a') && !st.degraded.has('k100b'), '合计 2 ≥ 2 → 整组回主');
   });
 
   t('主 model 成功 → 兜底解除该 key 降级(防御性;正常流程降级 key 不进入主层)', () => {
