@@ -100,6 +100,7 @@ function normalizeProvider(p, i) {
 
   return {
     name: String(p.name || 'provider-' + (i + 1)),
+    weight: clampWeight(p.weight), // provider 级权重(1-100, 默认 100): auto 模型跨 provider 加权分发用
     apiType: String(p.apiType || 'openai').toLowerCase(),
     baseURL: String(p.baseURL || DEFAULT_UPSTREAM).replace(/\/+$/, ''),
     apiPath: p.apiPath ? String(p.apiPath) : null,

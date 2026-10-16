@@ -96,26 +96,42 @@ async function handleChat(req, res, pathname, method, body, pick) {
   if (!cfg.providers.length) return json(res, 503, { error: { message: `proxy: 无可用 provider (${config.CONFIG_FILE})` } });
 
   // Provider 选择(对外保持 OpenAI 通用格式, 无需任何自定义请求头):
-  //   1. x-provider-name 显式指定(可选高级覆盖, 向后兼容)
-  //   2. 请求 body 的 model 名 → 路由到包含该 model 的 provider(外部只传 model 即自动路由)
-  //   3. defaultProvider
-  //   4. 轮询
+  //   - model=auto: 虚拟模型, 每个 provider 都有一个。选中的 provider 用其主 model
+  //     跑权重引擎(可降级);不带 x-provider-name 时在所有 provider 的主 model 间
+  //     加权分发(平滑轮询),所有 provider 都会被用到
+  //   - 其他 model: 1) x-provider-name 显式指定(可选高级覆盖, 向后兼容)
+  //                 2) model 名 → 路由到包含该 model 的 provider
+  //                 3) defaultProvider  4) 轮询
   const parsed = ad.parseBody(body);
-  const requestedModel = (parsed && parsed.model) || null;
+  const origRequestedModel = (parsed && parsed.model) || null;
+  // 注意: auto 不改写 requestedModel。保持为 'auto' 才能让 prepUpstream 把
+  // 上游请求体的 model 改写成真实主 model id(候选 modelId !== 'auto' 才 setModel);
+  // 同时日志里的 model 也能看到外部请求的就是 auto
+  const requestedModel = origRequestedModel;
+  const isAuto = !!origRequestedModel && String(origRequestedModel).toLowerCase() === 'auto';
+  let autoMainId = null; // auto 实际路由到的主 model id
   let provider = pick ? cfg.providers.find((p) => p.name === pick) : null;
-  if (!provider && requestedModel) {
-    provider = cfg.providers.find((p) => p.models.some((m) => m.id === requestedModel)) || null;
-  }
-  if (!provider && cfg.defaultProvider) {
-    provider = cfg.providers.find((p) => p.name === cfg.defaultProvider) || null;
-  }
-  if (!provider) {
-    provider = cfg.providers[ppick % cfg.providers.length];
-    ppick++;
+  if (isAuto) {
+    if (!provider) {
+      provider = balance.weightedPick(cfg.providers); // 加权平滑分发
+    }
+    const main = balance.mainModel(provider);
+    if (main) autoMainId = main.id;
+  } else {
+    if (!provider && requestedModel) {
+      provider = cfg.providers.find((p) => p.models.some((m) => m.id === requestedModel)) || null;
+    }
+    if (!provider && cfg.defaultProvider) {
+      provider = cfg.providers.find((p) => p.name === cfg.defaultProvider) || null;
+    }
+    if (!provider) {
+      provider = cfg.providers[ppick % cfg.providers.length];
+      ppick++;
+    }
   }
 
   // 请求 model 是否在配置中: 在 → 权重引擎(可降级);不在 → 透传原 model + 主 key 池(仅换 key,不跨 model 降级)
-  const confModel = requestedModel ? provider.models.some((m) => m.id === requestedModel) : false;
+  const confModel = isAuto ? !!autoMainId : (requestedModel ? provider.models.some((m) => m.id === requestedModel) : false);
   const passThrough = !!requestedModel && !confModel;
   const st = stateOf(provider);
   const mainId = balance.mainModel(provider).id;
@@ -129,7 +145,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
     return pl;
   };
   let planList = confModel
-    ? rePlan(requestedModel)
+    ? rePlan(isAuto ? autoMainId : requestedModel)
     : rePlan(null).filter((c) => c.modelId === mainId); // 只用主 model 的 key 池
   const cap = balance.maxAttempts(provider);
   let attempts = 0;
@@ -142,7 +158,7 @@ async function handleChat(req, res, pathname, method, body, pick) {
   // traceId 关联同一次客户端调用的全部尝试(含被重试的 429/5xx),final=true 为该调用的最终记录
   const rec = {
     t: Date.now(), provider: provider.name, apiType: provider.apiType,
-    model: requestedModel, usedModel: null, key: null,
+    model: origRequestedModel, usedModel: null, key: null,
     path: pathname, method,
     status: null, ms: 0, attempts: 0, degraded: false, error: null,
     promptTokens: 0, cachedTokens: 0, completionTokens: 0,
@@ -491,12 +507,16 @@ async function handleModels(res, pick) {
   const cfg = config.load();
   if (!cfg.providers.length) return json(res, 503, { error: { message: 'proxy: 无可用 provider' } });
 
+  // 每个 provider 的模型列表追加虚拟 auto 模型(id=auto, 路由到该 provider 的主 model)
+  const withAuto = (p) => [
+    ...p.models.map((m) => ({ id: m.id, object: 'model', owned_by: p.name, weight: m.weight })),
+    { id: 'auto', object: 'model', owned_by: p.name, weight: 0 },
+  ];
+
   // 不带 x-provider-name: 返回全部 provider 的模型合并列表(OpenAI 通用格式, /v1/models = elp 整体能力)
   if (!pick) {
     const data = [];
-    for (const p of cfg.providers) {
-      for (const m of p.models) data.push({ id: m.id, object: 'model', owned_by: p.name, weight: m.weight });
-    }
+    for (const p of cfg.providers) data.push(...withAuto(p));
     return json(res, 200, { object: 'list', data });
   }
 
@@ -504,8 +524,7 @@ async function handleModels(res, pick) {
   if (!provider) return json(res, 400, { error: { message: `provider "${pick}" 不存在` } });
 
   // 配置了 models 列表 → 返回(含权重)
-  const ids = provider.models.map((m) => m.id);
-  const data = ids.map((id, i) => ({ id, object: 'model', owned_by: provider.name, weight: provider.models[i].weight }));
+  const data = withAuto(provider);
   return json(res, 200, { object: 'list', data });
 }
 

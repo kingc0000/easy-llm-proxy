@@ -39,6 +39,29 @@ function mainModel(p) {
   return modelsSorted(p)[0];
 }
 
+/* ---------------- 跨 provider 加权轮询(auto 模型分发用) ---------------- */
+let swState = [];
+/**
+ * 平滑加权轮询(SWRR, nginx 同款): 按 provider.weight 比例平滑交错选中,
+ * 权重 95:90 时不会出现连续某个 provider 独占,所有 provider 都会被用到。
+ * provider 列表/权重变化时自动重建状态。
+ */
+function weightedPick(providers) {
+  if (!providers || !providers.length) return null;
+  const w = (p) => (Number.isFinite(p.weight) && p.weight >= 1 ? p.weight : 100);
+  if (swState.length !== providers.length || swState.some((s, i) => s.w !== w(providers[i]))) {
+    swState = providers.map((p) => ({ w: w(p), cur: 0 }));
+  }
+  const total = swState.reduce((s, x) => s + x.w, 0);
+  let best = 0;
+  for (let i = 0; i < swState.length; i++) {
+    swState[i].cur += swState[i].w;
+    if (swState[i].cur > swState[best].cur) best = i;
+  }
+  swState[best].cur -= total;
+  return providers[best];
+}
+
 /** 初始状态 */
 function newState() {
   return { degraded: new Map(), failAt: new Map(), lastKey: null, lastFail: null };
@@ -245,4 +268,4 @@ function maxAttempts(p) {
 /** 兼容旧调用: 某 key 降级是否到期 */
 function degradedDue(p, d) { return keyDegradedDue(p, d); }
 
-module.exports = { modelsSorted, mainModel, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey, inCooldown, cooldownMs };
+module.exports = { modelsSorted, mainModel, weightedPick, newState, plan, report, degrade, maxAttempts, degradedDue, advanceKey, inCooldown, cooldownMs };

@@ -309,6 +309,29 @@ module.exports = async () => {
     assert.strictEqual(p.find((c) => c.key === 'k100a').modelId, 'm100');
   });
 
+  // 平滑加权轮询(SWRR): auto 模型跨 provider 分发
+  t('weightedPick 按权重比例覆盖所有 provider(95:90 → 两 provider 交替命中)', () => {
+    const ps = [
+      { name: 'A', weight: 95 },
+      { name: 'B', weight: 90 },
+    ];
+    const seen = new Set();
+    for (let i = 0; i < 20; i++) seen.add(bal.weightedPick(ps).name);
+    assert.ok(seen.has('A') && seen.has('B'), `20 次内 A/B 都应被命中 (got ${[...seen]})`);
+    const picked = Array.from({ length: 185 }, () => bal.weightedPick(ps).name);
+    const cntA = picked.filter((n) => n === 'A').length;
+    const cntB = picked.filter((n) => n === 'B').length;
+    assert.strictEqual(cntA, 95, `A 应命中 95 次/g周期 (got ${cntA})`);
+    assert.strictEqual(cntB, 90, `B 应命中 90 次/g周期 (got ${cntB})`);
+  });
+
+  t('weightedPick 均权(1) → 两种 provider 都能被选中', () => {
+    const ps = [{ name: 'X', weight: 1 }, { name: 'Y', weight: 1 }];
+    const seen = new Set();
+    for (let i = 0; i < 4; i++) seen.add(bal.weightedPick(ps).name);
+    assert.ok(seen.has('X') && seen.has('Y'), '均权下 X/Y 都该出现');
+  });
+
   console.log(failures ? `\n${failures} 个测试失败` : '\n全部通过');
   return failures === 0;
 };
