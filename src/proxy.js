@@ -95,18 +95,25 @@ async function handleChat(req, res, pathname, method, body, pick) {
   const cfg = config.load();
   if (!cfg.providers.length) return json(res, 503, { error: { message: `proxy: 无可用 provider (${config.CONFIG_FILE})` } });
 
-  let provider;
-  const want = pick || cfg.defaultProvider;
-  if (want) {
-    provider = cfg.providers.find((p) => p.name === want);
-    if (!provider) return json(res, 400, { error: { message: `proxy: provider "${want}" 不存在` } });
-  } else {
+  // Provider 选择(对外保持 OpenAI 通用格式, 无需任何自定义请求头):
+  //   1. x-provider-name 显式指定(可选高级覆盖, 向后兼容)
+  //   2. 请求 body 的 model 名 → 路由到包含该 model 的 provider(外部只传 model 即自动路由)
+  //   3. defaultProvider
+  //   4. 轮询
+  const parsed = ad.parseBody(body);
+  const requestedModel = (parsed && parsed.model) || null;
+  let provider = pick ? cfg.providers.find((p) => p.name === pick) : null;
+  if (!provider && requestedModel) {
+    provider = cfg.providers.find((p) => p.models.some((m) => m.id === requestedModel)) || null;
+  }
+  if (!provider && cfg.defaultProvider) {
+    provider = cfg.providers.find((p) => p.name === cfg.defaultProvider) || null;
+  }
+  if (!provider) {
     provider = cfg.providers[ppick % cfg.providers.length];
     ppick++;
   }
 
-  const parsed = ad.parseBody(body);
-  const requestedModel = (parsed && parsed.model) || null;
   // 请求 model 是否在配置中: 在 → 权重引擎(可降级);不在 → 透传原 model + 主 key 池(仅换 key,不跨 model 降级)
   const confModel = requestedModel ? provider.models.some((m) => m.id === requestedModel) : false;
   const passThrough = !!requestedModel && !confModel;
@@ -483,9 +490,18 @@ function outputFail(res, provider, result, attempts, rec) {
 async function handleModels(res, pick) {
   const cfg = config.load();
   if (!cfg.providers.length) return json(res, 503, { error: { message: 'proxy: 无可用 provider' } });
-  const want = pick || cfg.defaultProvider;
-  const provider = want ? cfg.providers.find((p) => p.name === want) : cfg.providers[0];
-  if (!provider) return json(res, 400, { error: { message: `provider "${want || pick}" 不存在` } });
+
+  // 不带 x-provider-name: 返回全部 provider 的模型合并列表(OpenAI 通用格式, /v1/models = elp 整体能力)
+  if (!pick) {
+    const data = [];
+    for (const p of cfg.providers) {
+      for (const m of p.models) data.push({ id: m.id, object: 'model', owned_by: p.name, weight: m.weight });
+    }
+    return json(res, 200, { object: 'list', data });
+  }
+
+  const provider = cfg.providers.find((p) => p.name === pick);
+  if (!provider) return json(res, 400, { error: { message: `provider "${pick}" 不存在` } });
 
   // 配置了 models 列表 → 返回(含权重)
   const ids = provider.models.map((m) => m.id);
