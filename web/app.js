@@ -552,46 +552,95 @@ async function loadRequests() {
   try {
     const d = await api('/api/requests?' + query);
     const list = $('#req-list');
-    window.__reqRows = d.rows || [];
+    const rows = d.rows || [];
+    window.__reqRows = rows;
     window.__reqDate = date;
     window.__reqDetail = {};          // 详情惰性加载缓存(列表不携带正文)
     if (!d.total) { list.innerHTML = `<div class="empty">${date ? date + ' ' : ''}暂无调用记录${(model || status || q) ? '(符合筛选)' : ''}</div>`; return; }
-    list.innerHTML = d.rows.map((r, i) => {
-      const st = r.status;
-      const cls = (st >= 200 && st < 300) ? 'ok' : 'err';
-      const errInfo = r.error ? ` <span class="req-err">⚡ ${esc(r.error)}</span>` : '';
-      const downgraded = r.degraded ? ' <span title="降级命中">⇣降级</span>' : '';
-      const pathInfo = r.path ? ` <span class="mono" title="接口路径">${esc(r.path)}</span>` : '';
-      const clientInfo = r.ingressKey ? ` <span class="mono" title="外部接入 key">${esc(String(r.ingressKey).slice(0, 16))}</span>` : '';
-      const tok = `<span title="请求tok/缓存tok/输出tok">${r.promptTokens || 0}/${r.cachedTokens || 0}/${r.completionTokens || 0}</span>`;
-      // 尝试链: final=false 是被重试掉的单次上游尝试(独立成行);最终记录 attempts>1 说明含重试
-      const attemptInfo = r.final === false
-        ? `<span class="req-err" title="同一次调用的第 ${r.attemptIdx || 1} 次上游尝试, 已被重试">第${r.attemptIdx || 1}次尝试</span>`
-        : ((r.attempts || 0) > 1 ? `<span class="req-time" title="含重试, 各次上游尝试均有独立记录">尝试${r.attempts}次</span>` : '');
-      const traceInfo = r.traceId ? ` <span class="mono" title="调用追踪 ID: 同一次客户端调用的全部上游尝试共享">${esc(String(r.traceId).slice(0, 8))}</span>` : '';
-      return `<div class="req-row">
-        <div class="req-head" onclick="toggleReqDetail(${i}, event)">
-          <span class="req-time">${new Date(r.t).toLocaleString()}</span>
-          ${pathInfo}
-          <b>${esc(r.provider || '-')}</b>
-          <span>${r.model !== r.usedModel && r.model ? esc(r.model) + ' → ' : ''}${esc(r.usedModel || r.model || '-')}</span>
-          <span class="mono">${esc(r.key || '-')}</span>
-          <span class="req-status ${cls}">${st || '-'}</span>
-          <span>${r.ms || 0}ms</span>
-          ${tok}
-          ${downgraded}${clientInfo}
-          ${attemptInfo}
-          ${traceInfo}
-          ${errInfo}
-        </div>
-        <div class="req-detail hidden" id="reqd-${i}">
-          <div><h4>原始请求</h4><pre data-kind="req" data-i="${i}"></pre></div>
-          <div><h4>原始返回</h4><pre data-kind="res" data-i="${i}"></pre></div>
-        </div>
-      </div>`;
-    }).join('');
+
+    // 按 traceId 分组: 同一次客户端调用的全部上游尝试折叠成一组(主行=最终记录, 子行=被重试的中间尝试)
+    const byTrace = new Map();
+    const singles = [];
+    rows.forEach((r, i) => {
+      r.__i = i;
+      if (r.traceId) {
+        if (!byTrace.has(r.traceId)) byTrace.set(r.traceId, { traceId: r.traceId, final: null, attempts: [], rawIdx: i });
+        const g = byTrace.get(r.traceId);
+        if (r.final === false) g.attempts.push(r);
+        else { g.final = r; g.rawIdx = i; }
+      } else {
+        singles.push({ traceId: null, final: r, attempts: [], rawIdx: i });
+      }
+    });
+    const groups = [];
+    for (const g of byTrace.values()) {
+      if (!g.final) { g.final = g.attempts.pop() || {}; g.rawIdx = g.final.__i != null ? g.final.__i : g.rawIdx; }
+      g.attempts.sort((a, b) => (a.attemptIdx || 0) - (b.attemptIdx || 0));
+      groups.push(g);
+    }
+    groups.push(...singles);
+    groups.sort((a, b) => ((b.final && b.final.t) || 0) - ((a.final && a.final.t) || 0));
+    window.__reqGroups = groups;
+
+    list.innerHTML = groups.map((g, gi) => renderReqGroup(g, gi)).join('');
   } catch (e) { if (maybeNeedToken(e)) return; $('#req-list').innerHTML = `<div class="empty err">加载失败: ${esc(e.message)}</div>`; }
 }
+
+const fmtTok = (n) => (n ? Number(n).toLocaleString() : 0);
+function statusCls(st) {
+  if (st == null) return '';
+  if (st >= 200 && st < 300) return 'ok';
+  if (st === 429 || st === 408) return 'rate';
+  if (st >= 500) return 'err';
+  return 'warn';
+}
+
+/* 渲染一组调用(主行 + 被重试的尝试子行 + 详情行) */
+function renderReqGroup(g, gi) {
+  const r = g.final || {};
+  const modelCell = (r.model !== r.usedModel && r.model ? esc(r.model) + ' → ' : '') + esc(r.usedModel || r.model || '-');
+  const tags = [];
+  if (r.degraded) tags.push(`<span class="tag-dg" title="降级命中">⇣降级</span>`);
+  if (g.attempts.length) tags.push(`<span class="tag-rt" title="含被重试的上游尝试, 已折叠为子行">重试${g.attempts.length + 1}次</span>`);
+  if (r.ingressKey) tags.push(`<span class="tag-ext" title="外部接入 key">${esc(String(r.ingressKey).slice(0, 12))}</span>`);
+  if (g.traceId) tags.push(`<span class="mono tag-tr" title="同一客户端调用的全部上游尝试共享">#${esc(String(g.traceId).slice(0, 8))}</span>`);
+  if (r.error) tags.push(`<span class="req-err" title="${esc(r.error)}">⚡ ${esc(r.error).slice(0, 60)}</span>`);
+  const attemptRows = g.attempts.map((a) => {
+    const reason = a.reason ? ` <span class="req-err">${esc(a.reason)}</span>` : '';
+    return `<tr class="attempt">
+      <td class="at"></td>
+      <td class="s ${statusCls(a.status)}">${a.status == null ? '-' : a.status}</td>
+      <td class="m">${esc(a.usedModel || '-')}</td>
+      <td class="k mono">${esc(a.key || '-')}</td>
+      <td class="ms">${a.ms || 0}ms</td>
+      <td class="tok">—</td>
+      <td class="tag"><span class="at-tag">第${a.attemptIdx || 1}次尝试</span>${reason}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="req-group">
+    <table class="req-table">
+      <tbody>
+        <tr class="main ${g.attempts.length ? 'clickable' : ''}" data-gi="${gi}" onclick="toggleReqGroup(${gi}, event)">
+          <td class="t">${new Date(r.t || Date.now()).toLocaleString()}</td>
+          <td class="s ${statusCls(r.status)}">${r.status == null ? '-' : r.status}</td>
+          <td class="m">${modelCell}</td>
+          <td class="k mono">${esc(r.key || '-')}</td>
+          <td class="ms">${r.ms || 0}ms</td>
+          <td class="tok">${fmtTok(r.promptTokens)}/${fmtTok(r.cachedTokens)}/${fmtTok(r.completionTokens)}</td>
+          <td class="tag">${tags.join(' ')}</td>
+        </tr>
+        ${attemptRows}
+        <tr class="detail-row hidden" data-gi="${gi}">
+          <td colspan="7"><div class="req-detail">
+            <div><h4>原始请求</h4><pre data-kind="req"></pre></div>
+            <div><h4>原始返回</h4><pre data-kind="res"></pre></div>
+          </div></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>`;
+}
+
 /* 详情: 列表只返回元数据;点开才按字节偏移读取该行完整原文(含 req/res) */
 function fetchReqDetail(i) {
   const r = (window.__reqRows || [])[i];
@@ -605,10 +654,12 @@ function fetchReqDetail(i) {
     return row;
   });
 }
-function toggleReqDetail(i, ev) {
+function toggleReqGroup(gi, ev) {
   ev.stopPropagation();
-  const el = $('#reqd-' + i);
+  const el = document.querySelector(`.detail-row[data-gi="${gi}"]`);
   if (!el) return;
+  const g = (window.__reqGroups || [])[gi];
+  const i = g ? g.rawIdx : -1;   // 该组最终记录在 __reqRows 中的原始下标
   const closing = !el.classList.contains('hidden');
   el.classList.toggle('hidden');
   if (closing) return; // 收起无需填充

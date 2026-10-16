@@ -141,7 +141,7 @@
     <div class="req-head">
       <div class="req-title">
         <h2>调用记录</h2>
-        <span class="req-desc">全量 LLM API 调用记录（成功 / 上游失败 / 被拒 / 超限均记，按天落盘保留 7 天）；每次上游尝试（含被重试的 429 / 5xx / 超时）都单独记一行，同一客户端调用的各次尝试共享 trace id；列表只显示元数据，点击行才加载原始请求与原始返回</span>
+        <span class="req-desc">全量调用记录（成功 / 上游失败 / 被拒 / 超限均记，保留 7 天）；被重试的中间尝试（429/5xx/超时）按调用自动折叠成子行，点主行展开完整链路与原始请求/返回</span>
       </div>
       <div class="req-filters">
         <select id="req-date"></select>
@@ -149,9 +149,11 @@
         <input id="req-status" placeholder="状态码">
         <input id="req-q" placeholder="内容关键词">
         <label class="req-cb" title="只显示每次客户端调用的最终结果(隐藏被重试的中间尝试)"><input type="checkbox" id="req-final"> 只看最终</label>
-        <button id="btn-req-search" class="btn small primary">查询</button>
-        <button id="btn-req-refresh" class="btn small ghost" title="刷新">↻</button>
-        <button id="btn-req-purge" class="btn small ghost" title="按时间区间删除记录(精确到分钟)">🗑 清理</button>
+        <div class="req-fbtn">
+          <button id="btn-req-search" class="btn small primary">查询</button>
+          <button id="btn-req-refresh" class="btn small ghost" title="刷新">↻</button>
+          <button id="btn-req-purge" class="btn small ghost" title="按时间区间删除记录(精确到分钟)">🗑 清理</button>
+        </div>
       </div>
     </div>
     <div id="req-purge-bar" class="hidden" style="margin:8px 0 12px;padding:10px 12px;border:1px solid #2a3550;border-radius:8px;background:#141b2c;display:flex;gap:6px;align-items:center;flex-wrap:wrap">

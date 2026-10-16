@@ -251,10 +251,11 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
 }
 .req-desc { font-size: .8rem; color: var(--muted); }
 .req-filters {
-  display: flex; gap: .55rem; align-items: center; flex-wrap: wrap;
+  display: grid; grid-template-columns: 150px 132px 84px 1fr auto; gap: .55rem; align-items: center;
   background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
   padding: .65rem .75rem; box-shadow: var(--shadow-sm);
 }
+.req-filters .req-fbtn { grid-column: 1 / -1; display: flex; gap: .55rem; }
 .req-filters select, .req-filters input:not(#req-final) {
   height: 34px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; color: var(--fg); padding: 0 .65rem; font-size: .84rem;
@@ -278,23 +279,45 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   outline: none; border-color: var(--accent); background-color: #fff;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, .16);
 }
-.req-filters #req-model { width: 134px; }
+.req-filters #req-model { width: 132px; }
 .req-filters #req-status { width: 84px; }
-.req-filters #req-q { flex: 1; min-width: 170px; }
+.req-filters #req-q { width: 100%; min-width: 170px; }
 #btn-req-search { height: 34px; padding: 0 .95rem; border-radius: 8px; font-weight: 600; }
 #btn-req-refresh { height: 34px; width: 34px; padding: 0; border-radius: 8px; }
-.req-row {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
-  padding: .6rem .9rem; margin-bottom: .55rem; font-size: .84rem; box-shadow: var(--shadow-sm);
-  transition: border-color .15s ease;
+
+/* 调用记录表格(按 traceId 分组卡片) */
+.req-group {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  margin-bottom: .55rem; overflow: hidden; box-shadow: var(--shadow-sm);
 }
-.req-row:hover { border-color: rgba(59, 130, 246, .4); }
-.req-row .req-head { display: flex; gap: .85rem; align-items: center; flex-wrap: wrap; cursor: pointer; }
-.req-row .req-time { color: var(--muted); font-size: .78rem; }
-.req-row .req-status { font-weight: 700; }
-.req-row .req-status.ok { color: var(--ok); }
-.req-row .req-status.err { color: var(--err); }
-.req-row .req-err { color: #b45309; background: #fffbeb; padding: .05rem .45rem; border-radius: 6px; font-size: .78rem; }
+.req-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.req-table td { padding: .52rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.req-table tbody tr:last-child td { border-bottom: none; }
+.req-table tr.main { background: var(--panel2); }
+.req-table tr.main.clickable { cursor: pointer; }
+.req-table tr.main.clickable:hover { background: rgba(59, 130, 246, .09); }
+.req-table tr.attempt { background: rgba(180, 83, 9, .06); }
+.req-table tr.attempt td { color: var(--muted); }
+.req-table .t { color: var(--muted); font-size: .78rem; width: 132px; }
+.req-table .at { width: 30px; }
+.req-table .s { font-weight: 700; width: 56px; }
+.req-table .s.ok { color: var(--ok); }
+.req-table .s.err { color: var(--err); }
+.req-table .s.rate { color: #f59e0b; }
+.req-table .s.warn { color: #d97706; }
+.req-table .m { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.req-table .k { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.req-table .ms { color: var(--muted); }
+.req-table .tok { color: var(--muted); font-variant-numeric: tabular-nums; }
+.req-table .tag { white-space: normal; max-width: 340px; }
+.req-table .tag span { margin-right: .4rem; }
+.tag-dg { color: #7c3aed; background: rgba(124, 58, 237, .1); padding: .05rem .4rem; border-radius: 6px; font-size: .75rem; }
+.tag-rt { color: #b45309; background: rgba(180, 83, 9, .1); padding: .05rem .4rem; border-radius: 6px; font-size: .75rem; }
+.tag-ext { color: #0369a1; background: rgba(3, 105, 161, .1); padding: .05rem .4rem; border-radius: 6px; font-size: .75rem; }
+.tag-tr { color: var(--muted); font-size: .75rem; }
+.at-tag { background: #b45309; color: #fff; padding: .05rem .4rem; border-radius: 5px; font-size: .72rem; margin-right: .4rem; }
+.detail-row td { background: var(--panel); padding: .7rem; }
+.detail-row.hidden { display: none; }
 .req-detail { margin-top: .6rem; border-top: 1px dashed var(--line); padding-top: .6rem; display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
 .req-detail h4 { margin: 0 0 .35rem; font-size: .78rem; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
 .req-detail pre {
@@ -303,6 +326,11 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   white-space: pre-wrap; word-break: break-all; line-height: 1.5;
 }
 @media (max-width: 700px) { .req-detail { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .req-filters { grid-template-columns: 1fr 1fr; }
+  .req-filters .req-fbtn { grid-column: 1 / -1; }
+  .req-table .tok, .req-table .ms { display: none; }
+}
 /* ---------- Dashboard 左侧导航 ---------- */
 .dash-layout { display: grid; grid-template-columns: 200px 1fr; gap: 1.2rem; align-items: start; }
 .side-nav {
