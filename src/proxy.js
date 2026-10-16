@@ -96,23 +96,36 @@ async function handleChat(req, res, pathname, method, body, pick) {
   if (!cfg.providers.length) return json(res, 503, { error: { message: `proxy: 无可用 provider (${config.CONFIG_FILE})` } });
 
   // Provider 选择(对外保持 OpenAI 通用格式, 无需任何自定义请求头):
-  //   - model=auto: 虚拟模型, 每个 provider 都有一个。选中的 provider 用其主 model
-  //     跑权重引擎(可降级);不带 x-provider-name 时在所有 provider 的主 model 间
-  //     加权分发(平滑轮询),所有 provider 都会被用到
+  //   - model=<provider>/auto: 指定 provider 的虚拟 auto 模型(如 sensenova/auto),
+  //     用该 provider 的主 model 跑权重引擎(可降级)
+  //   - model=auto: 全局虚拟模型, 在所有 provider 的主 model 间加权分发(平滑轮询),
+  //     所有 provider 都会被用到
   //   - 其他 model: 1) x-provider-name 显式指定(可选高级覆盖, 向后兼容)
   //                 2) model 名 → 路由到包含该 model 的 provider
   //                 3) defaultProvider  4) 轮询
   const parsed = ad.parseBody(body);
   const origRequestedModel = (parsed && parsed.model) || null;
-  // 注意: auto 不改写 requestedModel。保持为 'auto' 才能让 prepUpstream 把
-  // 上游请求体的 model 改写成真实主 model id(候选 modelId !== 'auto' 才 setModel);
-  // 同时日志里的 model 也能看到外部请求的就是 auto
+  // 注意: auto 不改写 requestedModel。保持原样(如 'auto' / 'sensenova/auto')才能让
+  // prepUpstream 把上游请求体的 model 改写成真实主 model id(候选 modelId !== 请求
+  // model 才 setModel);同时日志里的 model 能看到外部请求的就是 auto 形式
   const requestedModel = origRequestedModel;
-  const isAuto = !!origRequestedModel && String(origRequestedModel).toLowerCase() === 'auto';
+  const mstr = String(origRequestedModel || '');
+  const isBareAuto = !!origRequestedModel && mstr.toLowerCase() === 'auto';
+  // '<provider>/auto' → provider 名(auto 大小写不敏感)
+  const namedAuto = (() => {
+    const i = mstr.lastIndexOf('/');
+    if (i > 0 && mstr.slice(i + 1).toLowerCase() === 'auto') return mstr.slice(0, i);
+    return null;
+  })();
+  const isAuto = isBareAuto || !!namedAuto;
   let autoMainId = null; // auto 实际路由到的主 model id
   let provider = pick ? cfg.providers.find((p) => p.name === pick) : null;
   if (isAuto) {
-    if (!provider) {
+    if (namedAuto) {
+      // 指定 provider 的 auto: 覆盖 x-provider-name(模型名比请求头更具体)
+      provider = cfg.providers.find((p) => p.name === namedAuto) || null;
+      if (!provider) return json(res, 400, { error: { message: `provider "${namedAuto}" 不存在` } });
+    } else if (!provider) {
       provider = balance.weightedPick(cfg.providers); // 加权平滑分发
     }
     const main = balance.mainModel(provider);
@@ -507,10 +520,11 @@ async function handleModels(res, pick) {
   const cfg = config.load();
   if (!cfg.providers.length) return json(res, 503, { error: { message: 'proxy: 无可用 provider' } });
 
-  // 每个 provider 的模型列表追加虚拟 auto 模型(id=auto, 路由到该 provider 的主 model)
+  // 每个 provider 的模型列表追加虚拟 auto 模型(id=<provider>/auto, 多 provider 不重名,
+  // 外部可直接用该 id 请求以锁定 provider 主 model)
   const withAuto = (p) => [
     ...p.models.map((m) => ({ id: m.id, object: 'model', owned_by: p.name, weight: m.weight })),
-    { id: 'auto', object: 'model', owned_by: p.name, weight: 0 },
+    { id: `${p.name}/auto`, object: 'model', owned_by: p.name, weight: 0 },
   ];
 
   // 不带 x-provider-name: 返回全部 provider 的模型合并列表(OpenAI 通用格式, /v1/models = elp 整体能力)
