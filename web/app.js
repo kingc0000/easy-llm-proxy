@@ -684,21 +684,24 @@ if ($('#btn-req-purge')) {
   const pad = (n) => String(n).padStart(2, '0');
   const out = $('#req-purge-out');
   const setOut = (t) => { out.textContent = t; };
+  // 填充默认区间(今天 00:00 ~ 23:59), 与 datetime-local 组件格式一致
+  const fillDefaults = () => {
+    const d = new Date();
+    const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (!$('#req-purge-from').value) $('#req-purge-from').value = day + 'T00:00';
+    if (!$('#req-purge-to').value) $('#req-purge-to').value = day + 'T23:59';
+  };
+  fillDefaults();
   const readRange = () => {
     const from = ($('#req-purge-from').value || '').trim();
     const to = ($('#req-purge-to').value || '').trim();
-    if (!from) { setOut('请填写 from(格式 2026-10-14T00:00)'); return null; }
+    if (!from) { setOut('请选择开始时间(精确到分钟)'); return null; }
     return { from, to, url: '/api/requests?from=' + encodeURIComponent(from) + (to ? '&to=' + encodeURIComponent(to) : '') };
   };
   $('#btn-req-purge').addEventListener('click', () => {
     const bar = $('#req-purge-bar');
     bar.classList.toggle('hidden');
-    if (!bar.classList.contains('hidden')) {
-      setOut('');
-      const d = new Date();
-      $('#req-purge-from').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00`;
-      $('#req-purge-to').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T23:59`;
-    }
+    if (!bar.classList.contains('hidden')) { setOut(''); fillDefaults(); }
   });
   $('#btn-purge-close').addEventListener('click', () => $('#req-purge-bar').classList.add('hidden'));
   $('#btn-purge-dry').addEventListener('click', async () => {
