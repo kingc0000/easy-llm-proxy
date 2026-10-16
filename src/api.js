@@ -147,6 +147,16 @@ async function handleApi(req, res, pathname, method) {
   }
   if (pathname === '/api/requests' && method === 'GET') {
     const q = new URL(req.url, 'http://x').searchParams;
+    // 清理预览: GET /api/requests?from=...&to=...&dry=1 (只统计不删除)
+    // 面板「清理」按钮的预览走这里; 实际删除走下方 DELETE 分支
+    if (q.get('dry') === '1') {
+      const from = q.get('from') || '';
+      const to = q.get('to') || '';
+      if (!from) return json(res, 400, { ok: false, error: '需要 from=YYYY-MM-DDTHH:MM(可选 &to= / &dry=1)' });
+      return requests.purgeRange(from, to, true)
+        .then((r) => json(res, r.ok ? 200 : 400, r))
+        .catch((e) => json(res, 500, { ok: false, error: '清理预览失败: ' + e.message }));
+    }
     return requests.list(q.get('date') || '', {
       model: q.get('model') || '', status: q.get('status') || '', q: q.get('q') || '',
       final: q.get('final') || '',
