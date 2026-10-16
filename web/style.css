@@ -255,9 +255,9 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
   padding: .65rem .75rem; box-shadow: var(--shadow-sm);
 }
-/* 每个筛选项: 小标签 + 统一尺寸控件(纵向, 保证视觉一致) */
+/* 每个筛选项: 小标签 + 统一尺寸控件(纵向, 保证视觉一致); margin:0 抵消全局 label 的外边距 */
 .req-filters .field, #req-purge-bar .field {
-  display: inline-flex; flex-direction: column; gap: 4px; flex-shrink: 0;
+  display: inline-flex; flex-direction: column; gap: 4px; flex-shrink: 0; margin: 0;
 }
 .req-filters .field.grow { flex: 1 1 200px; min-width: 180px; }
 .field-cap { font-size: .68rem; color: var(--muted); padding-left: .35rem; letter-spacing: .04em; }
@@ -285,9 +285,10 @@ tbody tr:hover { background: rgba(59, 130, 246, .05); }
   background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237b8499' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right .6rem center;
 }
-/* 只看最终: 不换行, 整体作为一个控件 */
+/* 只看最终: 水平排列(必须显式 row, 否则继承全局 label 的 flex-direction:column 变成上下两行) */
 .req-cb {
-  display: inline-flex; align-items: center; gap: .4rem; height: 34px; flex-shrink: 0;
+  display: inline-flex; flex-direction: row; align-items: center; gap: .4rem;
+  height: 34px; flex-shrink: 0; margin: 0;
   padding: 0 .65rem; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); font-size: .82rem; color: var(--fg); cursor: pointer;
   user-select: none; white-space: nowrap; transition: border-color .15s, color .15s;
